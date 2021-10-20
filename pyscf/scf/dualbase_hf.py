@@ -7,7 +7,11 @@
 Dual Basis Hartree-Fock
 '''
 
+import numpy 
+
 from pyscf.scf import hf
+from pyscf.lib import logger
+from pyscf.scf import addons
 
 class DualBaseRHF(hf.RHF):
 
@@ -41,24 +45,26 @@ class DualBaseRHF(hf.RHF):
       # SCF using smaller basis in mol1
       conv, e, mo_e, mo, mo_occ = hf.kernel(self, conv_tol, conv_tol_grad, 
             dump_chk, dm0, callback, conv_check, **kwargs)
-      logger.info(mf, 'SCF on small basis E= %.15g', e)
+      logger.info(self, 'SCF on small basis E= %.15g', e)
 
       # project dm_small into dm_proj using larger basis in mol2
       dm_small = self.make_rdm1(mo, mo_occ)
       dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
 
       # construct fock from dm_proj
-      h1e = self.get_hcore(mol2)
-      vhf = self.get_veff(mol2, dm_proj)
+      self._eri = self.mol2.intor('int2e', aosym='s8')
+      h1e = self.get_hcore(self.mol2)
+      vhf = self.get_veff(self.mol2, dm_proj)
       fock = h1e + vhf
 
       # diagonalization once
-      s1e = self.get_ovlp(mol2)
+      s1e = self.get_ovlp(self.mol2)
       mo_energy, mo_coeff = self.eig(fock, s1e)
-      mo_occ = mf.get_occ(mo_energy, mo_coeff)
+      mo_occ = self.get_occ(mo_energy, mo_coeff)
 
       # update energy
       dm_large = self.make_rdm1(mo_coeff, mo_occ)
       e_tot = self.energy_tot(dm_large, h1e)
+      logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
 
       return conv, e_tot, mo_energy, mo_coeff, mo_occ
