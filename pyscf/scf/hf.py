@@ -260,7 +260,8 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         save_matrix("dm_", dm)
         save_matrix("fock_", fock)
         save_matrix("vhf_", vhf)
-        save_matrix("vj_", vhf.vj)
+        if hasattr(vhf, 'vj'):
+           save_matrix("vj_", vhf.vj)
         save_matrix("s1e_", s1e)
 
     logger.timer(mf, 'scf_cycle', *cput0)

@@ -74,7 +74,8 @@ class DualBaseRHF(hf.RHF):
       save_matrix("dm_large_", dm_large)
       save_matrix("fock_", fock)
       save_matrix("vhf_", vhf)
-      save_matrix("vj_", vhf.vj)
+      if hasattr(vhf, 'vj'):
+         save_matrix("vj_", vhf.vj)
       save_matrix("s1e_", s1e)
 
       return conv, e_tot, mo_energy, mo_coeff, mo_occ
