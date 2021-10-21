@@ -254,6 +254,14 @@ Keyword argument "init_dm" is replaced by "dm0"''')
                     e_tot, e_tot-last_hf_e, norm_gorb, norm_ddm)
         if dump_chk:
             mf.dump_chk(locals())
+        # @@@@@@@@@@@@@
+        def save_matrix(fname, mat):
+           numpy.savetxt(fname+mf.mol.basis, mat)
+        save_matrix("dm_", dm)
+        save_matrix("fock_", fock)
+        save_matrix("vhf_", vhf)
+        save_matrix("vj_", vhf.vj)
+        save_matrix("s1e_", s1e)
 
     logger.timer(mf, 'scf_cycle', *cput0)
     # A post-processing hook before return
