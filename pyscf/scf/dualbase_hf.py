@@ -52,10 +52,10 @@ class DualBaseRHF(hf.RHF):
       dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
 
       # construct fock from dm_proj
-      self._eri = self.mol2.intor('int2e', aosym='s8') # TODO set _eri to None would be better?
+      self.reset(self.mol2)
       h1e = self.get_hcore(self.mol2)
       vhf = self.get_veff(self.mol2, dm_proj)
-      fock = h1e + vhf
+      fock = self.get_fock(h1e=h1e, vhf=vhf)
 
       # diagonalization once
       s1e = self.get_ovlp(self.mol2)
@@ -67,15 +67,5 @@ class DualBaseRHF(hf.RHF):
       logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
       new_vhf = self.get_veff(self.mol2, dm_large)
       e_tot = self.energy_tot(dm_large, h1e, new_vhf)
-      # @@@@@@@@@@@@@
-      def save_matrix(fname, mat):
-         numpy.savetxt(fname+self.mol.basis+"-"+self.mol2.basis, mat)
-      save_matrix("dm_proj_", dm_proj)
-      save_matrix("dm_large_", dm_large)
-      save_matrix("fock_", fock)
-      save_matrix("vhf_", vhf)
-      if hasattr(vhf, 'vj'):
-         save_matrix("vj_", vhf.vj)
-      save_matrix("s1e_", s1e)
 
       return conv, e_tot, mo_energy, mo_coeff, mo_occ
