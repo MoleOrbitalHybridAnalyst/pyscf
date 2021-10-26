@@ -31,6 +31,7 @@ from pyscf.pbc.scf import krohf
 from pyscf.pbc.scf import kghf
 from pyscf.pbc.scf import newton_ah
 from pyscf.pbc.scf import addons
+from pyscf.pbc.scf import dualbase_hf
 
 UHF = uhf.UHF
 ROHF = rohf.ROHF

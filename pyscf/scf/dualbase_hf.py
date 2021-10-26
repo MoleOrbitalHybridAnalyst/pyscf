@@ -51,8 +51,13 @@ class DualBaseRHF(hf.RHF):
       dm_small = self.make_rdm1(mo, mo_occ)
       dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
 
-      # construct fock from dm_proj
+      # reset things for mol2
       self.reset(self.mol2)
+      self._eri = None                      # seems needed by pbc.scf.rhf ?
+      if hasattr(self, "with_df"):
+         self.with_df.__init__(self.mol2)   # seems needed by pbc.scf.rhf ?
+
+      # construct fock from dm_proj
       h1e = self.get_hcore(self.mol2)
       vhf = self.get_veff(self.mol2, dm_proj)
       fock = self.get_fock(h1e=h1e, vhf=vhf)
@@ -67,5 +72,13 @@ class DualBaseRHF(hf.RHF):
       logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
       new_vhf = self.get_veff(self.mol2, dm_large)
       e_tot = self.energy_tot(dm_large, h1e, new_vhf)
+      logger.info(self, 'Energy on larger basis E= %.15g', e_tot)
+
+      # SCF to converge
+      if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
+         self.mol = self.mol2
+         conv, e_tot, mo_energy, mo_coeff, mo_occ = \
+               hf.kernel(self, conv_tol, conv_tol_grad, 
+               dump_chk, dm_large, callback, conv_check, **kwargs)
 
       return conv, e_tot, mo_energy, mo_coeff, mo_occ
