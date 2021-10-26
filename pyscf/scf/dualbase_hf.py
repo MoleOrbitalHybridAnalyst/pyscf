@@ -56,6 +56,10 @@ class DualBaseRHF(hf.RHF):
       self._eri = None                      # seems needed by pbc.scf.rhf ?
       if hasattr(self, "with_df"):
          self.with_df.__init__(self.mol2)   # seems needed by pbc.scf.rhf ?
+      if hasattr(self, "grids"):
+         self.grids.__init__(self.mol2)     # in case DFT.reset doesn't do this
+      if hasattr(self, "nlcgrids"):
+         self.nlcgrids.__init__(self.mol2)  # in case DFT.reset doesn't do this
 
       # construct fock from dm_proj
       h1e = self.get_hcore(self.mol2)
