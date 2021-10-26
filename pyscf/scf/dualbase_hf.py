@@ -52,10 +52,16 @@ class DualBaseRHF(hf.RHF):
       dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
 
       # reset things for mol2
-      self.reset(self.mol2)
+#      self.reset(self.mol2)
+      if hasattr(self, "mol"):
+         self.mol = self.mol2
+      if hasattr(self, "cell"):
+         self.cell = self.cell2
       self._eri = None                      # seems needed by pbc.scf.rhf ?
       if hasattr(self, "with_df"):
          self.with_df.__init__(self.mol2)   # seems needed by pbc.scf.rhf ?
+         if hasattr(self.with_df, "task_list"):
+            self.with_df.task_list = None   # seems needed by FFTDF2?
       if hasattr(self, "grids"):
          self.grids.__init__(self.mol2)     # in case DFT.reset doesn't do this
       if hasattr(self, "nlcgrids"):
@@ -73,14 +79,16 @@ class DualBaseRHF(hf.RHF):
 
       # update energy
       dm_large = self.make_rdm1(mo_coeff, mo_occ)
-      logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
+#      logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
       new_vhf = self.get_veff(self.mol2, dm_large)
       e_tot = self.energy_tot(dm_large, h1e, new_vhf)
-      logger.info(self, 'Energy on larger basis E= %.15g', e_tot)
+      logger.info(self, 'One SCF on larger basis E= %.15g', e_tot)
+      e_tot = e + numpy.einsum('ij,ji->', dm_large-dm_proj, fock)
+      logger.info(self, 'Corrected Energy on larger basis E= %.15g', e_tot)
 
       # SCF to converge
       if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
-         self.mol = self.mol2
+#         self.mol = self.mol2
          conv, e_tot, mo_energy, mo_coeff, mo_occ = \
                hf.kernel(self, conv_tol, conv_tol_grad, 
                dump_chk, dm_large, callback, conv_check, **kwargs)
