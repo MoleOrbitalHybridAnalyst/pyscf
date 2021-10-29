@@ -46,6 +46,7 @@ class DualBaseRHF(hf.RHF):
       conv, e, mo_e, mo, mo_occ = hf.kernel(self, conv_tol, conv_tol_grad, 
             dump_chk, dm0, callback, conv_check, **kwargs)
       logger.info(self, 'SCF on small basis E= %.15g', e)
+      self.converged = conv
 
       # project dm_small into dm_proj using larger basis in mol2
       dm_small = self.make_rdm1(mo, mo_occ)
@@ -74,23 +75,28 @@ class DualBaseRHF(hf.RHF):
 
       # diagonalization once
       s1e = self.get_ovlp(self.mol2)
-      mo_energy, mo_coeff = self.eig(fock, s1e)
-      mo_occ = self.get_occ(mo_energy, mo_coeff)
+      self.mo_energy, self.mo_coeff = self.eig(fock, s1e)
+      self.mo_occ = self.get_occ(self.mo_energy, self.mo_coeff)
 
       # update energy
-      dm_large = self.make_rdm1(mo_coeff, mo_occ)
+      dm_large = self.make_rdm1(self.mo_coeff, self.mo_occ)
 #      logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
       new_vhf = self.get_veff(self.mol2, dm_large)
       e_tot = self.energy_tot(dm_large, h1e, new_vhf)
       logger.info(self, 'One SCF on larger basis E= %.15g', e_tot)
-      e_tot = e + numpy.einsum('ij,ji->', dm_large-dm_proj, fock)
-      logger.info(self, 'Corrected Energy on larger basis E= %.15g', e_tot)
+      # @@@@ ad hoc and ugly solution for mulitple k points
+      if hasattr(self, 'kpts'):
+         self.e_tot = e + \
+               numpy.einsum('kij,kji->', dm_large-dm_proj, fock) / len(self.kpts)
+      else:
+         self.e_tot = e + numpy.einsum('ij,ji->', dm_large-dm_proj, fock)
+      logger.info(self, 'Corrected Energy on larger basis E= %.15g', self.e_tot)
 
       # SCF to converge
       if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
 #         self.mol = self.mol2
-         conv, e_tot, mo_energy, mo_coeff, mo_occ = \
+         self.converged, self.e_tot, self.mo_energy, self.mo_coeff, self.mo_occ = \
                hf.kernel(self, conv_tol, conv_tol_grad, 
                dump_chk, dm_large, callback, conv_check, **kwargs)
 
-      return conv, e_tot, mo_energy, mo_coeff, mo_occ
+      return self.converged, self.e_tot, self.mo_energy, self.mo_coeff, self.mo_occ
