@@ -22,6 +22,7 @@ from pyscf.pbc.dft import kroks
 from pyscf.pbc.dft import krkspu
 from pyscf.pbc.dft import kukspu
 from pyscf.pbc.dft import dualbase_rks
+from pyscf.pbc.dft import dualbase_krks
 
 UKS = uks.UKS
 ROKS = roks.ROKS
