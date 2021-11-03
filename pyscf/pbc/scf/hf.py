@@ -623,7 +623,10 @@ class SCF(mol_hf.SCF):
             if with_k and self.exxdiv == 'ewald':
                 from pyscf.pbc.df.df_jk import _ewald_exxdiv_for_G0
                 # G=0 is not inculded in the ._eri integrals
-                _ewald_exxdiv_for_G0(self.cell, kpt, dm.reshape(-1,nao,nao),
+                # @@@@@@@@@@@
+                #_ewald_exxdiv_for_G0(self.cell, kpt, dm.reshape(-1,nao,nao),
+                #                     vk.reshape(-1,nao,nao))
+                _ewald_exxdiv_for_G0(cell, kpt, dm.reshape(-1,nao,nao),
                                      vk.reshape(-1,nao,nao))
         elif self.rsjk:
             vj, vk = self.rsjk.get_jk(dm.reshape(-1,nao,nao), hermi, kpt, kpts_band,

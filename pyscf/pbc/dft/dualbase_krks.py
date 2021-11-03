@@ -32,4 +32,6 @@ class DualBaseKRKS(krks.KRKS, dualbase_hf.DualBaseRHF):
       self.mol = self.cell
       self.mol2 = self.cell2
 
+      self._keys = self._keys.union(['cell2', 'mol2'])
+
    kernel = dualbase_hf.DualBaseRHF.kernel

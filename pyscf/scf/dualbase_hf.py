@@ -13,6 +13,67 @@ from pyscf.scf import hf
 from pyscf.lib import logger
 from pyscf.scf import addons
 
+def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
+      dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
+   '''
+   Examples:
+
+   >>> from pyscf import gto, scf
+   >>> mol = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvdz')
+   >>> mol2 = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvtz')
+   >>> mf = scf.dualbase_hf.DualBaseRHF(mol, mol2)
+   >>> conv, e, mo_e, mo, mo_occ = mf.kernel()
+   >>> print('conv = %s, E(HF) = %.12f' % (conv, e))
+   '''
+
+   # SCF using smaller basis in mol1
+   conv, e, mo_e, mo, mo_occ = hf.kernel(mf, conv_tol, conv_tol_grad, 
+         dump_chk, dm0, callback, conv_check, **kwargs)
+   logger.info(mf, 'SCF on small basis E= %.15g', e)
+   mf.converged = conv
+
+   # project dm_small into dm_proj using larger basis in mol2
+   dm_small = mf.make_rdm1(mo, mo_occ)
+   dm_proj = addons.project_dm_nr2nr(mf.mol, dm_small, mf.mol2)
+
+   # reset things for mol2
+   mf._reset(mf.mol2)
+
+   # construct fock from dm_proj
+   h1e = mf.get_hcore(mf.mol2)
+   vhf = mf.get_veff(mf.mol2, dm_proj)
+   fock = mf.get_fock(h1e=h1e, vhf=vhf)
+
+   # diagonalization once
+   s1e = mf.get_ovlp(mf.mol2)
+   mf.mo_energy, mf.mo_coeff = mf.eig(fock, s1e)
+   mf.mo_occ = mf.get_occ(mf.mo_energy, mf.mo_coeff)
+
+   # update energy
+   dm_large = mf.make_rdm1(mf.mo_coeff, mf.mo_occ)
+   new_vhf = mf.get_veff(mf.mol2, dm_large)
+   e_tot = mf.energy_tot(dm_large, h1e, new_vhf)
+   logger.info(mf, 'One SCF on larger basis E= %.15g', e_tot)
+   # @@@@ ad hoc and ugly solution for mulitple k points
+   if hasattr(mf, 'kpts'):
+      mf.e_tot = e + \
+            numpy.einsum('kij,kji->', dm_large-dm_proj, fock) / len(mf.kpts)
+   else:
+      mf.e_tot = e + numpy.einsum('ij,ji->', dm_large-dm_proj, fock)
+   logger.info(mf, 'Corrected Energy on larger basis E= %.15g', mf.e_tot)
+
+   # SCF to converge
+   if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
+      mf.converged, mf.e_tot, mf.mo_energy, mf.mo_coeff, mf.mo_occ = \
+            hf.kernel(mf, conv_tol, conv_tol_grad, 
+            dump_chk, dm_large, callback, conv_check, **kwargs)
+
+   # reset again for future call of this kernel
+   mf._reset(mf.mol)
+
+   return mf.converged, mf.e_tot, mf.mo_energy, mf.mo_coeff, mf.mo_occ
+
+
 class DualBaseRHF(hf.RHF):
 
    def __init__(self, mol, mol2):
@@ -27,76 +88,47 @@ class DualBaseRHF(hf.RHF):
          mol2.build()
 
       self.mol2 = mol2
+      self._keys = self._keys.union(['mol2'])
 
-
-   def kernel(self, conv_tol=1e-10, conv_tol_grad=None,
-         dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
-      '''
-      Examples:
-
-      >>> from pyscf import gto, scf
-      >>> mol = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvdz')
-      >>> mol2 = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvtz')
-      >>> mf = scf.dualbase_hf.DualBaseRHF(mol, mol2)
-      >>> conv, e, mo_e, mo, mo_occ = mf.kernel()
-      >>> print('conv = %s, E(HF) = %.12f' % (conv, e))
-      '''
-
-      # SCF using smaller basis in mol1
-      conv, e, mo_e, mo, mo_occ = hf.kernel(self, conv_tol, conv_tol_grad, 
-            dump_chk, dm0, callback, conv_check, **kwargs)
-      logger.info(self, 'SCF on small basis E= %.15g', e)
-      self.converged = conv
-
-      # project dm_small into dm_proj using larger basis in mol2
-      dm_small = self.make_rdm1(mo, mo_occ)
-      dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
-
-      # reset things for mol2
+   def _reset(self, mol):
 #      self.reset(self.mol2)
-      if hasattr(self, "mol"):
-         self.mol = self.mol2
-      if hasattr(self, "cell"):
-         self.cell = self.cell2
-      self._eri = None                      # seems needed by pbc.scf.rhf ?
+#      if hasattr(self, "mol"):
+#         self.mol = self.mol2
+#      if hasattr(self, "cell"):
+#         self.cell = self.cell2
+      self._eri = None                # seems needed by pbc.scf.rhf ?
       if hasattr(self, "with_df"):
-         self.with_df.__init__(self.mol2)   # seems needed by pbc.scf.rhf ?
+         self.with_df.__init__(mol)   # seems needed by pbc.scf.rhf ?
          if hasattr(self.with_df, "task_list"):
             self.with_df.task_list = None   # seems needed by FFTDF2?
       if hasattr(self, "grids"):
-         self.grids.__init__(self.mol2)     # in case DFT.reset doesn't do this
+         self.grids.__init__(mol)     # in case DFT.reset doesn't do this
       if hasattr(self, "nlcgrids"):
-         self.nlcgrids.__init__(self.mol2)  # in case DFT.reset doesn't do this
+         self.nlcgrids.__init__(mol)  # in case DFT.reset doesn't do this
 
-      # construct fock from dm_proj
-      h1e = self.get_hcore(self.mol2)
-      vhf = self.get_veff(self.mol2, dm_proj)
-      fock = self.get_fock(h1e=h1e, vhf=vhf)
+   def kernel(self, dm0=None, **kwargs):
+      ''' copy paste from scf.hf.scf()
+      '''
+      cput0 = (logger.process_clock(), logger.perf_counter())
 
-      # diagonalization once
-      s1e = self.get_ovlp(self.mol2)
-      self.mo_energy, self.mo_coeff = self.eig(fock, s1e)
-      self.mo_occ = self.get_occ(self.mo_energy, self.mo_coeff)
+      self.dump_flags()
+      self.build(self.mol)
 
-      # update energy
-      dm_large = self.make_rdm1(self.mo_coeff, self.mo_occ)
-#      logger.info(self, 'tr(\Delta PF)= %.15g', numpy.trace((dm_large-dm_proj)@fock))
-      new_vhf = self.get_veff(self.mol2, dm_large)
-      e_tot = self.energy_tot(dm_large, h1e, new_vhf)
-      logger.info(self, 'One SCF on larger basis E= %.15g', e_tot)
-      # @@@@ ad hoc and ugly solution for mulitple k points
-      if hasattr(self, 'kpts'):
-         self.e_tot = e + \
-               numpy.einsum('kij,kji->', dm_large-dm_proj, fock) / len(self.kpts)
+      if self.max_cycle > 0 or self.mo_coeff is None:
+          self.converged, self.e_tot, \
+                  self.mo_energy, self.mo_coeff, self.mo_occ = \
+                  kernel(self, self.conv_tol, self.conv_tol_grad,
+                         dm0=dm0, callback=self.callback,
+                         conv_check=self.conv_check, **kwargs)
       else:
-         self.e_tot = e + numpy.einsum('ij,ji->', dm_large-dm_proj, fock)
-      logger.info(self, 'Corrected Energy on larger basis E= %.15g', self.e_tot)
+          # Avoid to update SCF orbitals in the non-SCF initialization
+          # (issue #495).  But run regular SCF for initial guess if SCF was
+          # not initialized.
+          self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
+                              dm0=dm0, callback=self.callback,
+                              conv_check=self.conv_check, **kwargs)[1]
 
-      # SCF to converge
-      if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
-#         self.mol = self.mol2
-         self.converged, self.e_tot, self.mo_energy, self.mo_coeff, self.mo_occ = \
-               hf.kernel(self, conv_tol, conv_tol_grad, 
-               dump_chk, dm_large, callback, conv_check, **kwargs)
+      logger.timer(self, 'SCF', *cput0)
+      self._finalize()
+      return self.e_tot
 
-      return self.converged, self.e_tot, self.mo_energy, self.mo_coeff, self.mo_occ

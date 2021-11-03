@@ -6,7 +6,7 @@ class GradientsHF(rhf_grad.Gradients):
 
    def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
-        self.mol = self.base.mol
+        self.mol = self.base.mol2
         if mo_energy is None: mo_energy = self.base.mo_energy
         if mo_coeff is None: mo_coeff = self.base.mo_coeff
         if mo_occ is None: mo_occ = self.base.mo_occ
@@ -15,12 +15,12 @@ class GradientsHF(rhf_grad.Gradients):
         else:
             self.atmlst = atmlst
         if atmlst is None:
-           atmlst = range()
+           atmlst = range(self.mol.natm)
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
         if self.verbose >= logger.INFO:
-            self.dump_flags(self.mol.natm)
+            self.dump_flags()
 
         # basically hcore_generator without get_hcore
         with_x2c = getattr(self.base, 'with_x2c', None)
