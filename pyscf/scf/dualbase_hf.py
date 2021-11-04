@@ -195,4 +195,8 @@ class DualBaseRHF(hf.RHF):
       self._finalize()
       return self.e_tot
 
+   def nuc_grad_method(self):
+       from pyscf.grad import dualbase_rhf_rough
+       return dualbase_rhf_rough.GradientsHF(self)
+
    as_scanner = as_scanner

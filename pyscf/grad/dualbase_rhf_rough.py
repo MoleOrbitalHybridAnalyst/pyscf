@@ -4,6 +4,7 @@ from pyscf.lib import logger
 import numpy
 
 def as_scanner(mf_grad):
+    raise NotImplementedError()
     ''' copy paste from grad.rhf.as_scanner
                     and scf.dualbase_hf.as_scanner
     '''
@@ -33,6 +34,7 @@ def as_scanner(mf_grad):
             mf_scanner = self.base
             e_tot = mf_scanner(mol)
             self.mol = mol
+            self.mol2 = mol2
 
             # If second integration grids are created for RKS and UKS
             # gradients
@@ -51,7 +53,7 @@ class GradientsHF(rhf_grad.Gradients):
 
     def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
-        self.mol = self.base.mol2
+        self.base._reset(self.mol2)     # TODO just like in scf.dualbse_hf, we need this 
         if mo_energy is None: mo_energy = self.base.mo_energy
         if mo_coeff is None: mo_coeff = self.base.mo_coeff
         if mo_occ is None: mo_occ = self.base.mo_occ
@@ -60,7 +62,7 @@ class GradientsHF(rhf_grad.Gradients):
         else:
             self.atmlst = atmlst
         if atmlst is None:
-            atmlst = range(self.mol.natm)
+            atmlst = range(self.mol2.natm)
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
@@ -72,26 +74,26 @@ class GradientsHF(rhf_grad.Gradients):
         if with_x2c:
             Exception("I don't know what this is yet")
         else:
-            with_ecp = self.mol.has_ecp()
+            with_ecp = self.mol2.has_ecp()
             if with_ecp:
-                ecp_atoms = set(self.mol._ecpbas[:,gto.ATOM_OF])
+                ecp_atoms = set(self.mol2._ecpbas[:,gto.ATOM_OF])
             else:
                 ecp_atoms = ()
-            aoslices = self.mol.aoslice_by_atom()
+            aoslices = self.mol2.aoslice_by_atom()
             dm0 = self.base.make_rdm1(mo_coeff, mo_occ)
             de = numpy.zeros((len(atmlst),3))
             for k, ia in enumerate(atmlst):
                 p0, p1 = aoslices [ia,2:]
-                with self.mol.with_rinv_at_nucleus(ia):
-                    vrinv = self.mol.intor('int1e_iprinv', comp=3) # <\nabla|1/r|>
-                    vrinv *= -self.mol.atom_charge(ia)
+                with self.mol2.with_rinv_at_nucleus(ia):
+                    vrinv = self.mol2.intor('int1e_iprinv', comp=3) # <\nabla|1/r|>
+                    vrinv *= -self.mol2.atom_charge(ia)
                     if with_ecp and ia in ecp_atoms:
-                        vrinv += self.mol.intor('ECPscalar_iprinv', comp=3)
+                        vrinv += self.mol2.intor('ECPscalar_iprinv', comp=3)
                 vrinv = vrinv + vrinv.transpose(0,2,1)
                 de[k] += numpy.einsum('xij,ij->x', vrinv, dm0)
 
         self.de = de + self.grad_nuc(atmlst=atmlst)
-        if self.mol.symmetry:
+        if self.mol2.symmetry:
             self.de = self.symmetrize(self.de, atmlst)
         logger.timer(self, 'SCF gradients', *cput0)
         self._finalize()

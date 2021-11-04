@@ -28,3 +28,7 @@ class DualBaseRKS(rks.RKS, dualbase_hf.DualBaseRHF):
       self._keys = self._keys.union(['mol2'])
 
    kernel = dualbase_hf.DualBaseRHF.kernel
+
+   def nuc_grad_method(self):
+       from pyscf.grad import dualbase_rks_rough
+       return dualbase_rks_rough.GradientsHF(self)
