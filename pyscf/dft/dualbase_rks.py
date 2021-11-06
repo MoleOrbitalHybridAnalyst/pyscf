@@ -25,7 +25,6 @@ class DualBaseRKS(rks.RKS, dualbase_hf.DualBaseRHF):
          mol2.build()
       self.mol2 = mol2
 
-      self._keys = self._keys.union(['mol2'])
 
    kernel = dualbase_hf.DualBaseRHF.kernel
 

@@ -287,9 +287,10 @@ class Atoms:
         self.method = method
         self.dm = None
         if 'mol2' in kwargs:
-            self.mol2 = kwargs.pop['mol2']
+            self.mol2 = kwargs.pop('mol2')
         else:
             self.mol2 = None
+        self.kwargs = kwargs
 
         self.fakecell = fakecell
         if self.fakecell is not None:
@@ -305,11 +306,14 @@ class Atoms:
 
     def set_positions(self, positions):
         self.mol.set_geom_(positions, unit='Bohr')
-#      self.method.mol.set_geom_(positions, unit='Bohr')
+        if self.mol2 is not None:
+            self.mol2.set_geom_(positions, unit='Bohr')
 
     def get_energy_grad(self):
         if self.mol2 is None:
-            self.method.__init__(self.mol, **kwargs)
+            self.method.__init__(self.mol, **self.kwargs)
+        else:
+            self.method.__init__(self.mol, self.mol2, **self.kwargs)
         etot = self.method.kernel(dm0=self.dm)
         if self.mol2 is None:
             self.dm = self.method.make_rdm1()
