@@ -317,6 +317,9 @@ class Atoms:
         etot = self.method.kernel(dm0=self.dm)
         if self.mol2 is None:
             self.dm = self.method.make_rdm1()
+        elif hasattr(self.method, 'dm_small') and \
+             self.method.dm_small is not None:
+            self.dm = self.method.dm_small
         return etot, self.method.nuc_grad_method().kernel()
 
     def get_stress(self):

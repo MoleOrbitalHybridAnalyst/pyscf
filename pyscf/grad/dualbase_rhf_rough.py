@@ -114,6 +114,7 @@ class GradientsNoU(rhf_grad.Gradients):
             mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None,
             fock_proj=None, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
+        self.base._reset(self.mol)      # TODO in case self.base is still using mol2
 
         if mo_energy_small is None: mo_energy_small = self.base.mo_energy_small
         if mo_coeff_small is None: mo_coeff_small = self.base.mo_coeff_small
@@ -134,10 +135,14 @@ class GradientsNoU(rhf_grad.Gradients):
 
         # compute the standard gradient in small basis
         # I want to call rhf_grad.Gradients.kernel here
-        self.de = super().kernel(
+#        self.de = super().kernel(
+        self.de = super(rhf_grad.Gradients, self).kernel(
                 mo_energy=mo_energy_small, \
                 mo_coeff=mo_coeff_small, \
                 mo_occ=mo_occ_small, atmlst=atmlst)
+        self.de_small = self.de.copy()
+
+        self.base._reset(self.mol2)     # TODO just like in scf.dualbse_hf, we need this 
 
         # compute projected mo_coeff C and dm
         mo_coeff_proj = numpy.zeros(mo_coeff_large.shape)
@@ -164,7 +169,8 @@ class GradientsNoU(rhf_grad.Gradients):
         s1 = self.get_ovlp(self.mol2)
 
         t0 = (logger.process_clock(), logger.perf_counter())
-        vhf = self.get_veff(self.mol2, dm_proj)  # get j, k derivs of fock_proj
+        #vhf = self.get_veff(self.mol2, dm_proj)  # get j, k derivs of fock_proj
+        v_proj, v_diff = self.get_veff(self.mol2, [dm_proj, dm_diff])  # get j, k derivs of fock_proj
         log.timer('gradients of 2e part', *t0)
 
         dme_proj = self.make_rdm1e(mo_energy_proj, mo_coeff_proj, mo_occ_large)
@@ -173,6 +179,11 @@ class GradientsNoU(rhf_grad.Gradients):
         if atmlst is None:
             atmlst = range(self.mol2.natm)
         aoslices = self.mol2.aoslice_by_atom()
+        # @@@@@
+        self.h1ao_de = numpy.zeros((self.mol2.natm, 3))
+        self.vhf_de = numpy.zeros((self.mol2.natm, 3))
+        self.s1_de = numpy.zeros((self.mol2.natm, 3))
+        # @@@@@
         for k, ia in enumerate(atmlst):
             p0, p1 = aoslices [ia,2:]
             h1ao = hcore_deriv(ia)
@@ -183,9 +194,16 @@ class GradientsNoU(rhf_grad.Gradients):
 #            self.de[k] += numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm_diff[p0:p1]) * 2
 #            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
 #            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
-            self.de[k] += numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm_diff[p0:p1]) * 4
-            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 4
-            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 4
+            self.de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) * 2
+            self.de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) * 2
+            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
+            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
+            # @@@@@@@@@@@@@
+            self.h1ao_de[k] += numpy.einsum('xij,ij->x', h1ao, dm_diff)
+            self.vhf_de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) 
+            self.vhf_de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) 
+            self.s1_de[k] += (numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) - numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]))
+            # @@@@@@@@@@@@@
 #            if k == 0:
 #                print(numpy.einsum('xij,ij->x', h1ao, dm_diff), numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm_diff[p0:p1]), numpy.einsum('xij,ij->x', -s1[:,p0:p1], dme_large[p0:p1]), numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]))
     
@@ -193,9 +211,29 @@ class GradientsNoU(rhf_grad.Gradients):
             # de[k] += self.extra_force(ia, locals()) 
 
         ## end of grad_elec ##
+        # @@@@@@@@@@@
+        self.dm_proj = dm_proj
+        self.dm_large = dm_proj + dm_diff
+        self.dme_proj = dme_proj
+        self.dme_large = dme_large
+        self.mol, self.mol2 = self.mol2, self.mol
+        save = self.de.copy()
+#        self.de_large = super().kernel(
+        self.de_large = super(rhf_grad.Gradients, self).kernel(
+                mo_energy=mo_energy_large, \
+                mo_coeff=mo_coeff_large, \
+                mo_occ=mo_occ_large, atmlst=atmlst)
+        self.de = save
+        self.mol, self.mol2 = self.mol2, self.mol
+        # @@@@@@@@@@@
 
         if self.mol.symmetry:
             self.de = self.symmetrize(self.de, atmlst)
         logger.timer(self, 'SCF gradients', *cput0)
         self._finalize()
         return self.de
+
+    def grad_elec(self, \
+            mo_energy_small=None, mo_coeff_small=None, mo_occ_small=None,
+            mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None, atmlst=None):
+        pass

@@ -39,6 +39,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     # project dm_small into dm_proj using larger basis in mol2
     dm_small = mf.make_rdm1(mf.mo_coeff_small, mf.mo_occ_small)
     dm_proj = addons.project_dm_nr2nr(mf.mol, dm_small, mf.mol2)
+    mf.dm_small = dm_small
 
     # reset things for mol2
     mf._reset(mf.mol2)
@@ -167,12 +168,13 @@ class DualBaseRHF(hf.RHF):
         self.mo_occ_large = None
 
         self.fock_proj = None
+        self.dm_small = None
 
         self._keys = self._keys.union(
             ['mol2', \
              'mo_energy_small', 'mo_coeff_small', 'mo_occ_small', \
              'mo_energy_large', 'mo_coeff_large', 'mo_occ_large',
-             'fock_proj'] )
+             'fock_proj', 'dm_small'] )
 
     def _reset(self, mol):
         #      self.reset(self.mol2)

@@ -58,6 +58,11 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         atmlst = range(mol.natm)
     aoslices = mol.aoslice_by_atom()
     de = numpy.zeros((len(atmlst),3))
+#    # @@@@@
+#    mf_grad.h1ao_de = numpy.zeros((mf_grad.mol.natm, 3))
+#    mf_grad.vhf_de = numpy.zeros((mf_grad.mol.natm, 3))
+#    mf_grad.s1_de = numpy.zeros((mf_grad.mol.natm, 3))
+#    # @@@@@
     for k, ia in enumerate(atmlst):
         p0, p1 = aoslices [ia,2:]
         h1ao = hcore_deriv(ia)
@@ -67,6 +72,11 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme0[p0:p1]) * 2
 
         de[k] += mf_grad.extra_force(ia, locals())
+#        # @@@@@
+#        mf_grad.h1ao_de[k] +=  numpy.einsum('xij,ij->x', h1ao, dm0)
+#        mf_grad.vhf_de[k] +=   numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm0[p0:p1])
+#        mf_grad.s1_de[k] +=    numpy.einsum('xij,ij->x', s1[:,p0:p1], dme0[p0:p1])
+#        # @@@@@
 
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of electronic part')
