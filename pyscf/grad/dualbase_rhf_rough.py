@@ -163,59 +163,17 @@ class GradientsNoU(rhf_grad.Gradients):
         # will use P_diff to compute P_diff h^R 
         dm_diff = self.base.make_rdm1(mo_coeff_large, mo_occ_large) - dm_proj
 
-        ## adapted from pyscf.grad.rhf.grad_elec ##
-        log = logger.Logger(self.stdout, self.verbose)
-        hcore_deriv = self.hcore_generator(self.mol2)
-        s1 = self.get_ovlp(self.mol2)
+        # add elec part of grad for energy correction
+        self.add_grad_elec(
+            mo_energy_proj,  mo_coeff_proj,  
+            mo_energy_large, mo_coeff_large, mo_occ_large, 
+            dm_proj, dm_diff, atmlst)
 
-        t0 = (logger.process_clock(), logger.perf_counter())
-        #vhf = self.get_veff(self.mol2, dm_proj)  # get j, k derivs of fock_proj
-        v_proj, v_diff = self.get_veff(self.mol2, [dm_proj, dm_diff])  # get j, k derivs of fock_proj
-        log.timer('gradients of 2e part', *t0)
-
-        dme_proj = self.make_rdm1e(mo_energy_proj, mo_coeff_proj, mo_occ_large)
-        dme_large = self.make_rdm1e(mo_energy_large, mo_coeff_large, mo_occ_large)
-
-        if atmlst is None:
-            atmlst = range(self.mol2.natm)
-        aoslices = self.mol2.aoslice_by_atom()
-        # @@@@@
-        self.h1ao_de = numpy.zeros((self.mol2.natm, 3))
-        self.vhf_de = numpy.zeros((self.mol2.natm, 3))
-        self.s1_de = numpy.zeros((self.mol2.natm, 3))
-        # @@@@@
-        for k, ia in enumerate(atmlst):
-            p0, p1 = aoslices [ia,2:]
-            h1ao = hcore_deriv(ia)
-            self.de[k] += numpy.einsum('xij,ij->x', h1ao, dm_diff)
-            # nabla was applied on bra in vhf, *2 for the contributions of nabla|ket>
-            # and 1/2 because we do not consider J, K themselve response
-            # and *2 because J K are double in tr(PF)
-#            self.de[k] += numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm_diff[p0:p1]) * 2
-#            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
-#            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
-            self.de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) * 2
-            self.de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) * 2
-            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
-            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
-            # @@@@@@@@@@@@@
-            self.h1ao_de[k] += numpy.einsum('xij,ij->x', h1ao, dm_diff)
-            self.vhf_de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) 
-            self.vhf_de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) 
-            self.s1_de[k] += (numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) - numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]))
-            # @@@@@@@@@@@@@
-#            if k == 0:
-#                print(numpy.einsum('xij,ij->x', h1ao, dm_diff), numpy.einsum('xij,ij->x', vhf[:,p0:p1], dm_diff[p0:p1]), numpy.einsum('xij,ij->x', -s1[:,p0:p1], dme_large[p0:p1]), numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]))
-    
-            # we have alreay done this when comput. grad in small basis SCF
-            # de[k] += self.extra_force(ia, locals()) 
-
-        ## end of grad_elec ##
         # @@@@@@@@@@@
         self.dm_proj = dm_proj
         self.dm_large = dm_proj + dm_diff
-        self.dme_proj = dme_proj
-        self.dme_large = dme_large
+#        self.dme_proj = dme_proj
+#        self.dme_large = dme_large
         self.mol, self.mol2 = self.mol2, self.mol
         save = self.de.copy()
 #        self.de_large = super().kernel(
@@ -233,7 +191,35 @@ class GradientsNoU(rhf_grad.Gradients):
         self._finalize()
         return self.de
 
-    def grad_elec(self, \
-            mo_energy_small=None, mo_coeff_small=None, mo_occ_small=None,
-            mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None, atmlst=None):
-        pass
+    def add_grad_elec(self, \
+            mo_energy_proj,  mo_coeff_proj,  
+            mo_energy_large, mo_coeff_large, mo_occ_large, 
+            dm_proj, dm_diff,
+            atmlst=None):
+        ## adapted from pyscf.grad.rhf.grad_elec ##
+        log = logger.Logger(self.stdout, self.verbose)
+        hcore_deriv = self.hcore_generator(self.mol2)
+        s1 = self.get_ovlp(self.mol2)
+
+        t0 = (logger.process_clock(), logger.perf_counter())
+        #vhf = self.get_veff(self.mol2, dm_proj)  # get j, k derivs of fock_proj
+        v_proj, v_diff = self.get_veff(self.mol2, [dm_proj, dm_diff])  # get j, k derivs of fock_proj
+        log.timer('gradients of 2e part', *t0)
+
+        dme_proj = self.make_rdm1e(mo_energy_proj, mo_coeff_proj, mo_occ_large)
+        dme_large = self.make_rdm1e(mo_energy_large, mo_coeff_large, mo_occ_large)
+
+        if atmlst is None:
+            atmlst = range(self.mol2.natm)
+        aoslices = self.mol2.aoslice_by_atom()
+        for k, ia in enumerate(atmlst):
+            p0, p1 = aoslices [ia,2:]
+            h1ao = hcore_deriv(ia)
+            self.de[k] += numpy.einsum('xij,ij->x', h1ao, dm_diff)
+            # nabla was applied on bra in vhf, *2 for the contributions of nabla|ket>
+            # and 1/2 because we do not consider J, K themselve response
+            # and *2 because J K are double in tr(PF)
+            self.de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) * 2
+            self.de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) * 2
+            self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
+            self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
