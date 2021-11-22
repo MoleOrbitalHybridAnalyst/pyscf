@@ -4,6 +4,8 @@ from pyscf.grad import dualbase_rhf_rough as dbrhfr_grad
 from pyscf.grad import rks as rks_grad
 from pyscf.lib import logger
 import numpy
+import time
+
 
 class GradientsHF(rks_grad.Gradients):
 
@@ -36,6 +38,10 @@ class GradientsNoU(rks_grad.Gradients):
         '''
         t0 = (logger.process_clock(), logger.perf_counter())
 
+        #@@@@@@
+        chhli_print_time = False
+        if chhli_print_time: ttt = time.time()
+        #@@@@@@
         mf = self.base
         ni = mf._numint
 
@@ -53,6 +59,9 @@ class GradientsNoU(rks_grad.Gradients):
 
         mem_now = lib.current_memory()[0]
         max_memory = max(2000, self.max_memory*.9-mem_now)
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
         ### get_vxc ###
         ''' \partial tr(F^XC \Delta P) / \partial P_\mu_\nv
@@ -69,6 +78,7 @@ class GradientsNoU(rks_grad.Gradients):
                     verbose=self.verbose)
             logger.debug1(self, 'sum(grids response) %s', exc.sum(axis=0))
         else:
+            # this one takes 0.28 s
             exc, vxc = rks_grad.get_vxc(\
                     ni, self.mol2, grids, mf.xc, dm_proj,
                     max_memory=max_memory, 
@@ -77,6 +87,9 @@ class GradientsNoU(rks_grad.Gradients):
         self.exc = exc
         self.vxc = vxc
         # @@@@@@@
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
         ## Exc second derivative
         relativity = 0
@@ -127,13 +140,25 @@ class GradientsNoU(rks_grad.Gradients):
                        4f_gg(\nabla\rho\dot\nabla\rho_diff)\nabla\rho
                        2f_g\nabla\rho_diff ] (\nabla(sl))^R dr
                 '''
+                #@@@@@@
+                if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                #@@@@@@
                 ao_deriv = 2
                 xc_deriv = 2
+                # block_loop takes 0.11 s ???
                 for ao, mask, weight, coords in \
                     ni.block_loop(self.mol2, grids, nao, ao_deriv, max_memory):
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
+                    # make rho 0.04 s
                     rho = make_rho(0, ao, mask, 'GGA')
                     rho_diff = make_rho(1, ao, mask, 'GGA')
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
 
+                    # eval_xc takes only 0.02 s !!
                     vv, fxc = ni.eval_xc(xc_code, rho, spin, relativity, 
                             xc_deriv, verbose=self.verbose)[1:3]
                     fr  = vv[0]
@@ -141,27 +166,46 @@ class GradientsNoU(rks_grad.Gradients):
                     frr = fxc[0]
                     frg = fxc[1]
                     fgg = fxc[2]
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
 
+                    # aow and daow takes 0.02 s ???
                     aow = ao[0] * weight[:,None]
                     daow = ao[1:4] * weight[:,None]
 
                     # part 1
+                    # drho_dot_drho_diff takes 0.0007 s
                     drho_dot_drhod = numpy.sum(rho[1:4] * rho_diff[1:4], axis=0)
+                    # part1 0.0003 s
                     part1 = frr * rho_diff[0] + 2 * frg * drho_dot_drhod
+                    # d1_dot 0.03 s
                     rks_grad._d1_dot_(vmat, self.mol2, 
                             ao[1:4], part1[:,None] * aow, 
                             mask, ao_loc, True)
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
 
                     # part 2
+                    # part 2 takes 0.0006 s
                     part2 = frg * rho_diff[0] + 2 * fgg * drho_dot_drhod
                     part2 = part2 * rho[1:4]
                     part2 += fg * rho_diff[1:4]
                     part2 *= 2
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
+                    # d1_dot 0.03 s
                     # \int s^R * part2 \dot \nabla l dr
                     rks_grad._d1_dot_(\
                             vmat, self.mol2, ao[1:4], 
                             numpy.einsum('xg,xgl->gl', part2, daow),
                             mask, ao_loc, True)
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
+                    # vmat takes 0.03 * 3 = 0.1 s
                     # \int (\nabla s)^R \dot part2 l dr
                     vmat[0] += numint._dot_ao_ao(self.mol2, 
                             # part2 \dot (sxx, syx, szx)
@@ -175,6 +219,9 @@ class GradientsNoU(rks_grad.Gradients):
                             # part2 \dot (sxz, syz, szz)
                             numpy.einsum('xg,xgs->gs', part2, ao[[6,8,9]]),
                             aow, mask, (0, self.mol2.nbas), ao_loc)
+                    #@@@@@@
+                    if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+                    #@@@@@@
             else:
                 raise NotImplementedError()
 
@@ -182,6 +229,7 @@ class GradientsNoU(rks_grad.Gradients):
             vmat = -vmat
         ### end of get_vxc ###
 
+        # j k 0.56 s
         # j k parts
         if abs(hyb) < 1e-10 and abs(alpha) < 1e-10:
             v_proj, v_diff = self.get_j(self.mol2, [dm_proj, dm_diff])
@@ -197,8 +245,15 @@ class GradientsNoU(rks_grad.Gradients):
         log.timer('gradients of 2e part', *t0)
         #### end of get_veff ####
 
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
+        # dme 0.0001 s
         dme_proj = self.make_rdm1e(mo_energy_proj, mo_coeff_proj, mo_occ_large)
         dme_large = self.make_rdm1e(mo_energy_large, mo_coeff_large, mo_occ_large)
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
         if atmlst is None:
             atmlst = range(self.mol2.natm)
@@ -209,6 +264,7 @@ class GradientsNoU(rks_grad.Gradients):
         self.s1_de = numpy.zeros((self.mol2.natm, 3))
         # @@@@@
         for k, ia in enumerate(atmlst):
+            #  this chunk 0.00086 s * Natoms
             p0, p1 = aoslices [ia,2:]
             h1ao = hcore_deriv(ia)
             self.de[k] += numpy.einsum('xij,ij->x', h1ao, dm_diff)
@@ -217,6 +273,11 @@ class GradientsNoU(rks_grad.Gradients):
             # and *2 because J K are double in tr(PF)
             self.de[k] += numpy.einsum('xij,ij->x', v_proj[:,p0:p1], dm_diff[p0:p1]) * 2
             self.de[k] += numpy.einsum('xij,ij->x', v_diff[:,p0:p1], dm_proj[p0:p1]) * 2
+
+            #@@@@@@
+            if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+            #@@@@@@
+            # this chunk 4.6E-5 * Natoms
             # *2 for ket
             # skeleton:
             self.de[k] += numpy.einsum('xij,ij->x', vxc[:,p0:p1], dm_diff[p0:p1]) * 2
@@ -225,4 +286,7 @@ class GradientsNoU(rks_grad.Gradients):
             # diag(UF):
             self.de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_large[p0:p1]) * 2
             self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
+            #@@@@@@
+            if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+            #@@@@@@
 

@@ -346,6 +346,7 @@ else:
         'GGA_X_PBE_JSJR'               : 126, # L. S. Pedroza, A. J. R. da Silva, and K. Capelle, Phys. Rev. B 79, 201106 (2009)
         'GGA_X_PBE_MOL'                : 49 , # J. M. del Campo, J. L. Gazquez, S. B. Trickey, and A. Vela, J. Chem. Phys. 136, 104108 (2012)
         'GGA_X_PBE_R'                  : 102, # Y. Zhang and W. Yang, Phys. Rev. Lett. 80, 890 (1998)
+        'GGA_X_PBE_RR'                 : 800, # Chenghan's recipe
         'GGA_X_PBE_SOL'                : 116, # J. P. Perdew, A. Ruzsinszky, G. I. Csonka, O. A. Vydrov, G. E. Scuseria, L. A. Constantin, X. Zhou, and K. Burke, Phys. Rev. Lett. 100, 136406 (2008)
         'GGA_X_PBE_TCA'                : 59 , # V. Tognetti, P. Cortona, and C. Adamo, Chem. Phys. Lett. 460, 536 (2008)
         'GGA_X_PBEA'                   : 121, # G. K. H. Madsen, Phys. Rev. B 75, 195108 (2007)
@@ -782,6 +783,7 @@ XC_ALIAS = {
     'PW91'              : 'PW91,PW91',
     'PBE'               : 'PBE,PBE',
     'REVPBE'            : 'PBE_R,PBE',
+    'REVREVPBE'         : 'PBE_RR,PBE',
     'PBESOL'            : 'PBE_SOL,PBE_SOL',
     'PKZB'              : 'PKZB,PKZB',
     'TPSS'              : 'TPSS,TPSS',

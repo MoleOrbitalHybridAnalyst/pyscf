@@ -75,9 +75,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
     # SCF to converge
     if 'scf2converge' in kwargs and kwargs.get('scf2converge') == True:
+        mf.mol, mf.mol2 = mf.mol2, mf.mol
         mf.converged, mf.e_tot, mf.mo_energy, mf.mo_coeff, mf.mo_occ = \
               hf.kernel(mf, conv_tol, conv_tol_grad,
                         dump_chk, dm_large, callback, conv_check, **kwargs)
+        mf.mol, mf.mol2 = mf.mol2, mf.mol
 
     # reset again for future call of this kernel
     mf._reset(mf.mol)

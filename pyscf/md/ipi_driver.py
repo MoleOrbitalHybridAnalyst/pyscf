@@ -306,8 +306,10 @@ class Atoms:
 
     def set_positions(self, positions):
         self.mol.set_geom_(positions, unit='Bohr')
+        self.mol.build()
         if self.mol2 is not None:
             self.mol2.set_geom_(positions, unit='Bohr')
+            self.mol2.build()
 
     def get_energy_grad(self):
         if self.mol2 is None:

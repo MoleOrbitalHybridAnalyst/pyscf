@@ -3,6 +3,7 @@ from pyscf.scf import addons
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
 import numpy
+import time
 
 def as_scanner(mf_grad):
     raise NotImplementedError()
@@ -115,6 +116,10 @@ class GradientsNoU(rhf_grad.Gradients):
             fock_proj=None, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
         self.base._reset(self.mol)      # TODO in case self.base is still using mol2
+        #@@@@@@
+        chhli_print_time = False
+        if chhli_print_time: ttt = time.time()
+        #@@@@@@
 
         if mo_energy_small is None: mo_energy_small = self.base.mo_energy_small
         if mo_coeff_small is None: mo_coeff_small = self.base.mo_coeff_small
@@ -132,7 +137,11 @@ class GradientsNoU(rhf_grad.Gradients):
             self.check_sanity()
         if self.verbose >= logger.INFO:
             self.dump_flags()
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
+        # gradient on small takes 0.06 s
         # compute the standard gradient in small basis
         # I want to call rhf_grad.Gradients.kernel here
 #        self.de = super().kernel(
@@ -143,7 +152,11 @@ class GradientsNoU(rhf_grad.Gradients):
         self.de_small = self.de.copy()
 
         self.base._reset(self.mol2)     # TODO just like in scf.dualbse_hf, we need this 
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
+        # takes 0.001 s
         # compute projected mo_coeff C and dm
         mo_coeff_proj = numpy.zeros(mo_coeff_large.shape)
         mo_coeff_proj[...,:self.mol.nao] += \
@@ -151,7 +164,11 @@ class GradientsNoU(rhf_grad.Gradients):
                     self.mol, mo_coeff_small, self.mol2) # shape Nao_L x Nao_S
         # replicated calc. of dm_proj; should be the same as self.base.dm_proj
         dm_proj = self.base.make_rdm1(mo_coeff_proj, mo_occ_large)
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
+        # this block takes 0.0005 s
         # compute F(P) in C representation: C^T F(P)_AO C
         # and take the diagonal term as the "mo_energy"
         # Note we only need the occupied MO terms
@@ -162,27 +179,34 @@ class GradientsNoU(rhf_grad.Gradients):
 
         # will use P_diff to compute P_diff h^R 
         dm_diff = self.base.make_rdm1(mo_coeff_large, mo_occ_large) - dm_proj
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
+        # this takes 1.21 s for GGA DFT
         # add elec part of grad for energy correction
         self.add_grad_elec(
             mo_energy_proj,  mo_coeff_proj,  
             mo_energy_large, mo_coeff_large, mo_occ_large, 
             dm_proj, dm_diff, atmlst)
+        #@@@@@@
+        if chhli_print_time: print(time.time() - ttt); ttt = time.time()
+        #@@@@@@
 
         # @@@@@@@@@@@
-        self.dm_proj = dm_proj
-        self.dm_large = dm_proj + dm_diff
-#        self.dme_proj = dme_proj
-#        self.dme_large = dme_large
-        self.mol, self.mol2 = self.mol2, self.mol
-        save = self.de.copy()
-#        self.de_large = super().kernel(
-        self.de_large = super(rhf_grad.Gradients, self).kernel(
-                mo_energy=mo_energy_large, \
-                mo_coeff=mo_coeff_large, \
-                mo_occ=mo_occ_large, atmlst=atmlst)
-        self.de = save
-        self.mol, self.mol2 = self.mol2, self.mol
+#        self.dm_proj = dm_proj
+#        self.dm_large = dm_proj + dm_diff
+##        self.dme_proj = dme_proj
+##        self.dme_large = dme_large
+#        self.mol, self.mol2 = self.mol2, self.mol
+#        save = self.de.copy()
+##        self.de_large = super().kernel(
+#        self.de_large = super(rhf_grad.Gradients, self).kernel(
+#                mo_energy=mo_energy_large, \
+#                mo_coeff=mo_coeff_large, \
+#                mo_occ=mo_occ_large, atmlst=atmlst)
+#        self.de = save
+#        self.mol, self.mol2 = self.mol2, self.mol
         # @@@@@@@@@@@
 
         if self.mol.symmetry:
