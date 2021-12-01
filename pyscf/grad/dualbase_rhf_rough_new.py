@@ -249,4 +249,84 @@ class GradientsNoU(rhf_grad.Gradients):
             self.de[k] += numpy.einsum('xij,ij->x', s1[:,p0:p1], dme_proj[p0:p1]) * 2
 
 class GradientsDiagF(GradientsNoU):
-    pass
+    '''
+    gradient that assumes every Fock is diagonalized
+    '''
+    def kernel(self, \
+            mo_energy_small=None, mo_coeff_small=None, mo_occ_small=None,
+            mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None,
+            fock_proj=None, atmlst=None):
+
+        if mo_energy_small is None: mo_energy_small = self.base.mo_energy_small
+        if mo_coeff_small is None: mo_coeff_small = self.base.mo_coeff_small
+        if mo_occ_small is None: mo_occ_small = self.base.mo_occ_small
+        if mo_energy_large is None: mo_energy_large = self.base.mo_energy_large
+        if mo_coeff_large is None: mo_coeff_large = self.base.mo_coeff_large
+        if mo_occ_large is None: mo_occ_large = self.base.mo_occ_large
+        if fock_proj is None: fock_proj = self.base.fock_proj
+        if atmlst is None:
+            atmlst = self.atmlst
+        else:
+            self.atmlst = atmlst
+
+        # compute everything that does not need U
+        GradientsNoU.kernel(self, mo_energy_small, mo_coeff_small, mo_occ_small,
+                                  mo_energy_large, mo_coeff_large, mo_occ_large,
+                                  fock_proj, atmlst)
+
+        self.base._reset(self.mol2)     
+        s1 = self.get_ovlp(self.mol2)
+        mo_coeff_proj = addons.project_mo_nr2nr( \
+                self.mol, mo_coeff_small, self.mol2) # shape Nao_L x Nao_S
+
+class GradientsNoVirt(GradientsNoU):
+    '''
+    gradient that assumes no virt-occ U
+    '''
+    def kernel(self, \
+            mo_energy_small=None, mo_coeff_small=None, mo_occ_small=None,
+            mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None,
+            fock_proj=None, atmlst=None):
+
+        if mo_energy_small is None: mo_energy_small = self.base.mo_energy_small
+        if mo_coeff_small is None: mo_coeff_small = self.base.mo_coeff_small
+        if mo_occ_small is None: mo_occ_small = self.base.mo_occ_small
+        if mo_energy_large is None: mo_energy_large = self.base.mo_energy_large
+        if mo_coeff_large is None: mo_coeff_large = self.base.mo_coeff_large
+        if mo_occ_large is None: mo_occ_large = self.base.mo_occ_large
+        if fock_proj is None: fock_proj = self.base.fock_proj
+        if atmlst is None:
+            atmlst = self.atmlst
+        else:
+            self.atmlst = atmlst
+
+        # compute everything that does not need U
+        GradientsNoU.kernel(self, mo_energy_small, mo_coeff_small, mo_occ_small,
+                                  mo_energy_large, mo_coeff_large, mo_occ_large,
+                                  fock_proj, atmlst)
+
+        self.base._reset(self.mol)     
+        dm_small = self.base.make_rdm1(mo_coeff_small, mo_occ_small)
+
+        self.base._reset(self.mol2)     
+        dm_large = self.base.make_rdm1(mo_coeff_large, mo_occ_large)
+        s1 = self.get_ovlp(self.mol2)
+        mo_coeff_proj = addons.project_mo_nr2nr( \
+                self.mol, mo_coeff_small, self.mol2) # shape Nao_L x Nao_S
+        dm_proj = addons.project_dm_nr2nr(self.mol, dm_small, self.mol2)
+
+        # TODO handle hybrid functional
+        jdiff = self.base.get_j(self.mol2, dm_proj-dm_large)
+        # occ.-occ. part of U times Jdiff
+        juoo = 2 * numpy.einsum('mk,nj,xmn,mn->xm', 
+                mo_coeff_proj, mo_coeff_proj, s1, jdiff)
+
+        if atmlst is None:
+            atmlst = range(self.mol2.natm)
+        aoslices = self.mol2.aoslice_by_atom()
+        for k, ia in enumerate(atmlst):
+            p0, p1 = aoslices [ia,2:]
+            # *2 for bra
+            self.de[k] += numpy.sum(juoo[:,p0:p1], axis=1) * 2
+
+        return self.de
