@@ -428,6 +428,7 @@ _INTOR_FUNCTIONS = {
     'int2c2e_ip1ip2'            : (9, 9),
     'int2c2e_ipip1'             : (9, 9),
     'int3c1e'                   : (1, 1),
+    'int3c1e_ip1'               : (3, 3),
     'int3c1e_p2'                : (1, 1),
     'int3c1e_iprinv'            : (3, 3),
     'int2c2e'                   : (1, 1),
@@ -474,7 +475,7 @@ def getints2c(intor_name, atm, bas, env, shls_slice=None, comp=1, hermi=0,
         dtype = numpy.double
         drv_name = prefix + 'int2c'
     else:
-        dtype = numpy.complex
+        dtype = numpy.complex128
         if '2c2e' in intor_name:
             assert(hermi != lib.HERMITIAN and
                    hermi != lib.ANTIHERMI)
@@ -539,7 +540,7 @@ def getints3c(intor_name, atm, bas, env, shls_slice=None, comp=1,
         shape = (nij, naok, comp)
 
     if 'spinor' in intor_name:
-        mat = numpy.ndarray(shape, numpy.complex, out, order='F')
+        mat = numpy.ndarray(shape, numpy.complex128, out, order='F')
         drv = libcgto.GTOr3c_drv
         fill = getattr(libcgto, 'GTOr3c_fill_'+aosym)
     else:
@@ -635,7 +636,7 @@ def getints4c(intor_name, atm, bas, env, shls_slice=None, comp=1,
         if '_spinor' in intor_name:
             drv = libcgto.GTOr4c_drv
             fill = libcgto.GTOr4c_fill_s1
-            out = numpy.ndarray(shape[::-1], dtype=numpy.complex, buffer=out, order='F')
+            out = numpy.ndarray(shape[::-1], dtype=numpy.complex128, buffer=out, order='F')
             out = numpy.rollaxis(out, -1, 0)
         else:
             drv = libcgto.GTOnr2e_fill_drv
@@ -708,7 +709,7 @@ def getints_by_shell(intor_name, shls, atm, bas, env, comp=1):
             return (l*2+1) * bas[basid,NCTR_OF]
     else:
         from pyscf.gto.mole import len_spinor
-        dtype = numpy.complex
+        dtype = numpy.complex128
         def num_cgto_of(basid):
             l = bas[basid,ANG_OF]
             k = bas[basid,KAPPA_OF]
