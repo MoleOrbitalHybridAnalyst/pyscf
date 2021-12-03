@@ -31,4 +31,5 @@ class DualBaseRKS(rks.RKS, dualbase_hf.DualBaseRHF):
    def nuc_grad_method(self):
        from pyscf.grad import dualbase_rks_rough
        #return dualbase_rks_rough.GradientsHF(self)
-       return dualbase_rks_rough.GradientsNoU(self)
+       #return dualbase_rks_rough.GradientsNoU(self)
+       return dualbase_rks_rough.GradientsFP(self)
