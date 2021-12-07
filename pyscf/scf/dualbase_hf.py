@@ -178,7 +178,7 @@ class DualBaseRHF(hf.RHF):
              'mo_energy_large', 'mo_coeff_large', 'mo_occ_large',
              'fock_proj', 'dm_small'] )
 
-    def _reset(self, mol):
+    def _reset(self, mol, gridlev=None):
         #      self.reset(self.mol2)
         #      if hasattr(self, "mol"):
         #         self.mol = self.mol2
@@ -191,6 +191,15 @@ class DualBaseRHF(hf.RHF):
                 self.with_df.task_list = None   # seems needed by FFTDF2?
         if hasattr(self, "grids"):
             self.grids.__init__(mol)     # in case DFT.reset doesn't do this
+            if gridlev is not None:
+                self.grids.level = gridlev
+            elif hasattr(self, "gridlev1"):
+                if mol == self.mol:
+                    self.grids.level = self.gridlev1
+                elif mol == self.mol2:
+                    self.grids.level = self.gridlev2
+                else:
+                    assert False
         if hasattr(self, "nlcgrids"):
             self.nlcgrids.__init__(mol)  # in case DFT.reset doesn't do this
 

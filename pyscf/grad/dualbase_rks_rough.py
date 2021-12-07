@@ -15,6 +15,167 @@ class GradientsHF(rks_grad.Gradients):
     kernel = dbrhfr_grad.GradientsHF.kernel
     as_scanner = dbrhfr_grad.GradientsHF.as_scanner
 
+class GradientsOneSCF(rks_grad.Gradients):
+
+    def __init__(self, method):
+        rks_grad.Gradients.__init__(self, method)
+        self.mol2 = method.mol2
+
+    def kernel(self, 
+        mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None,
+        atmlst=None):
+        self.base._reset(self.mol2)        # in case self.base is using mol
+
+        if mo_energy_large is None: mo_energy_large = self.base.mo_energy_large
+        if mo_coeff_large is None: mo_coeff_large = self.base.mo_coeff_large
+        if mo_occ_large is None: mo_occ_large = self.base.mo_occ_large
+
+        self.mol, self.mol2 = self.mol2, self.mol
+        self.de = rks_grad.Gradients.kernel(self, 
+                mo_energy=mo_energy_large, mo_coeff=mo_coeff_large,
+                mo_occ=mo_occ_large, atmlst=atmlst)
+        self.mol, self.mol2 = self.mol2, self.mol
+
+        return self.de
+
+def grad_elec_mn(mf_grad, m, n, mol=None, atmlst=None):
+    '''
+    Electronic part of Dual Base RHF/RKS gradients
+
+    Args:
+        mf_grad : grad.rhf.Gradients or grad.rks.Gradients object
+    '''
+    mf = mf_grad.base
+    log = logger.Logger(mf_grad.stdout, mf_grad.verbose)
+
+    # density-independent terms
+    hcore_deriv = mf_grad.hcore_generator(mol)
+    s1 = mf_grad.get_ovlp(mol)
+
+    assert m <= 1 and n <= 1
+    mo_occ = mf.mo_occ_large
+
+    # compute projected quantities (0-th order quantities)
+    mo_coeff_0 = numpy.zeros(mf.mo_coeff_large.shape)
+    mo_coeff_0[...,:mf.mol.nao] += \
+        addons.project_mo_nr2nr(mf.mol, mf.mo_coeff_small, mf.mol2)
+    dm_0 = mf.make_rdm1(mo_coeff_0, mo_occ)
+    mo_energy_0 = numpy.einsum('ij,jk,ki->i', 
+            mo_coeff_0.conj().T, mf.fock_proj, mo_coeff_0)
+    mo_coeffs = [mo_coeff_0]
+    mo_energys = [mo_energy_0]
+    dms = [dm_0]
+
+    # compute 1st order quantities
+    mo_coeffs.append(mf.mo_coeff_large)
+    mo_energys.append(mf.mo_energy_large)
+    dms.append(mf.make_rdm1(mo_coeffs[-1], mo_occ))
+
+    t0 = (logger.process_clock(), logger.perf_counter())
+    log.debug('Computing Gradients of NR-HF Coulomb repulsion')
+    # build fock using n-th order of dm
+    vxc, vhf_m, vhf_n = mf_grad.get_veff(mol, dms[m], dms[n])
+    log.timer('gradients of 2e part', *t0)
+
+    # I consider this approx the grad of tr(P_m F(P_n))
+    dme = mf_grad.make_rdm1e(mo_energys[n], mo_coeffs[m], mo_occ)
+
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    aoslices = mol.aoslice_by_atom()
+    de = numpy.zeros((len(atmlst),3))
+    # @@@@@
+#    mf_grad.h1ao_de = numpy.zeros((mf_grad.mol.natm, 3))
+#    mf_grad.vhf_de = numpy.zeros((mf_grad.mol.natm, 3))
+#    mf_grad.s1_de = numpy.zeros((mf_grad.mol.natm, 3))
+    # @@@@@
+    for k, ia in enumerate(atmlst):
+        p0, p1 = aoslices [ia,2:]
+        h1ao = hcore_deriv(ia)
+        de[k] += numpy.einsum('xij,ij->x', h1ao, dms[m])
+# nabla was applied on bra in vhf, *2 for the contributions of nabla|ket>
+        de[k] += numpy.einsum('xij,ij->x', vhf_n[:,p0:p1], dms[m][p0:p1]) 
+        de[k] += numpy.einsum('xij,ij->x', vhf_m[:,p0:p1], dms[n][p0:p1])
+# grad of Exc = \int exc(rho_n) dr; non-zero total grad if use vxc(dm_n) \dot dm_m
+        de[k] += numpy.einsum('xij,ij->x', vxc[:,p0:p1], dms[n][p0:p1]) * 2
+        de[k] -= numpy.einsum('xij,ij->x', s1[:,p0:p1], dme[p0:p1]) * 2
+
+        de[k] += mf_grad.extra_force(ia, locals())
+        # @@@@@
+#        mf_grad.h1ao_de[k] +=  numpy.einsum('xij,ij->x', h1ao, dms[m])
+#        mf_grad.vhf_de[k] +=   numpy.einsum('xij,ij->x', vhf[:,p0:p1], dms[m][p0:p1]) * 2
+#        mf_grad.s1_de[k] +=    numpy.einsum('xij,ij->x', s1[:,p0:p1], dme[p0:p1]) * 2
+        # @@@@@                
+
+    if log.verbose >= logger.DEBUG:
+        log.debug('gradients of electronic part')
+        _write(log, mol, de, atmlst)
+    return de
+
+class GradientsMN(rks_grad.Gradients):
+
+    def __init__(self, method):
+        rks_grad.Gradients.__init__(self, method)
+        self.mol2 = method.mol2
+
+    grad_elec_mn = grad_elec_mn
+
+    def get_veff(self, mol, dm_m, dm_n):
+        mf = self.base
+        ni = mf._numint
+        if self.grids is not None:
+            grids = self.grids
+        else:
+            grids = mf.grids
+        if grids.coords is None:
+            grids.build(with_non0tab=True)
+        if mf.nlc != '':
+            raise NotImplementedError
+        #enabling range-separated hybrids
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
+
+        exc, vxc = rks_grad.get_vxc(ni, mol, grids, mf.xc, dm_n)
+
+        if abs(hyb) < 1e-10 and abs(alpha) < 1e-10:
+            vhf_m = self.get_j(mol, dm_m)
+            vhf_n = self.get_j(mol, dm_n)
+        else:
+            vj, vk = self.get_jk(mol, dm_m)
+            vk *= hyb
+            if abs(omega) > 1e-10:  # For range separated Coulomb operator
+                with mol.with_range_coulomb(omega):
+                    vk += self.get_k(mol, dm_m) * (alpha - hyb)
+            vhf_m = vj - vk * .5
+            vj, vk = self.get_jk(mol, dm_n)
+            vk *= hyb
+            if abs(omega) > 1e-10:  # For range separated Coulomb operator
+                with mol.with_range_coulomb(omega):
+                    vk += self.get_k(mol, dm_n) * (alpha - hyb)
+            vhf_n = vj - vk * .5
+        return vxc, vhf_m, vhf_n
+
+    def kernel(self, m, n, atmlst=None):
+        cput0 = (logger.process_clock(), logger.perf_counter())
+        self.base._reset(self.mol2)
+        
+        if atmlst is None:
+            atmlst = self.atmlst
+        else:
+            self.atmlst = atmlst
+
+        if self.verbose >= logger.WARN:
+            self.check_sanity()
+        if self.verbose >= logger.INFO:
+            self.dump_flags()
+
+        de = self.grad_elec_mn(m, n, mol=self.mol2, atmlst=atmlst)
+        self.de = de + self.grad_nuc(atmlst=atmlst)
+        if self.mol.symmetry:
+            self.de = self.symmetrize(self.de, atmlst)
+        logger.timer(self, 'SCF gradients', *cput0)
+        self._finalize()
+        return self.de
+
 class GradientsNoU(rks_grad.Gradients):
 
 

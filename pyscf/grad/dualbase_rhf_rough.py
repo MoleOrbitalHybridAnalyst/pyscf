@@ -1,5 +1,5 @@
 from pyscf import lib, gto
-from pyscf.scf import addons
+from pyscf.scf import addons, _vhf
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
 import numpy
@@ -141,6 +141,9 @@ class GradientsNoU(rhf_grad.Gradients):
         if chhli_print_time: print(time.time() - ttt); ttt = time.time()
         #@@@@@@
 
+        # I want the small-basis grad to be accurate
+        if hasattr(self.base, 'gridlev1'):
+            self.base.grids.level = self.base.gridlev2
         # gradient on small takes 0.06 s
         # compute the standard gradient in small basis
         # I want to call rhf_grad.Gradients.kernel here
