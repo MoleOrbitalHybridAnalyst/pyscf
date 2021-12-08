@@ -36,6 +36,8 @@ class GradientsOneSCF(rks_grad.Gradients):
                 mo_occ=mo_occ_large, atmlst=atmlst)
         self.mol, self.mol2 = self.mol2, self.mol
 
+        self.base._reset(self.mol)
+
         return self.de
 
 def grad_elec_mn(mf_grad, m, n, mol=None, atmlst=None):

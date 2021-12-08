@@ -113,7 +113,7 @@ class GradientsNoU(rhf_grad.Gradients):
     def kernel(self, \
             mo_energy_small=None, mo_coeff_small=None, mo_occ_small=None,
             mo_energy_large=None, mo_coeff_large=None, mo_occ_large=None,
-            fock_proj=None, atmlst=None):
+            fock_proj=None, atmlst=None, accurate_grid=True):
         cput0 = (logger.process_clock(), logger.perf_counter())
         self.base._reset(self.mol)      # TODO in case self.base is still using mol2
         #@@@@@@
@@ -142,7 +142,7 @@ class GradientsNoU(rhf_grad.Gradients):
         #@@@@@@
 
         # I want the small-basis grad to be accurate
-        if hasattr(self.base, 'gridlev1'):
+        if accurate_grid and hasattr(self.base, 'gridlev1'):
             self.base.grids.level = self.base.gridlev2
         # gradient on small takes 0.06 s
         # compute the standard gradient in small basis
