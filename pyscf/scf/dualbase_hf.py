@@ -81,8 +81,13 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
                         dump_chk, dm_large, callback, conv_check, **kwargs)
         mf.mol, mf.mol2 = mf.mol2, mf.mol
 
-    # reset again for future call of this kernel
-    mf._reset(mf.mol)
+    if 'cache_mol2' in kwargs and kwargs.get('cache_mol2') == True:
+        # do not destroy df since it may be used afterwards
+        mf.cache_mol2 = True
+    else:
+        # reset again for future call of this kernel
+        mf._reset(mf.mol)
+        mf.cache_mol2 = False
 
     return mf.converged, mf.e_tot, mf.mo_energy, mf.mo_coeff, mf.mo_occ
 
