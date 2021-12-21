@@ -26,14 +26,13 @@ import scipy.linalg
 
 from pyscf import lib
 from pyscf.lib import logger
-from pyscf.gto import ATOM_OF, ANG_OF, NPRIM_OF, PTR_EXP, PTR_COEFF, PTR_ZETA, PTR_KIND
+from pyscf.gto import ATOM_OF, ANG_OF, NPRIM_OF, PTR_EXP, PTR_COEFF
 from pyscf.dft.numint import libdft, BLKSIZE
 from pyscf.pbc import tools
 from pyscf.pbc import gto
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.gto.cell import pgf_rcut
 from pyscf.pbc.gto.pseudo import pp_int
-from pyscf.pbc.gto.pseudo.pp_int import get_pp_nl
 from pyscf.pbc.dft import numint, gen_grid
 from pyscf.pbc.df.df_jk import _format_dms, _format_kpts_band, _format_jks
 from pyscf.pbc.lib.kpts_helper import gamma_point
@@ -342,67 +341,39 @@ def get_nuc(mydf, kpts=None):
         vne = vne[0]
     return numpy.asarray(vne)
 
+
 def make_rho_core(cell, precision=None, atm_id=None):
-    if precision is None:
-        precision = cell.precision
-    if atm_id is None:
-        atm_id = numpy.arange(cell.natm)
-    else:
-        atm_id = numpy.asarray(atm_id)
-    natm = len(atm_id)
+    fakecell, max_radius = pp_int.fake_cell_vloc_part1(cell, atm_id=atm_id, precision=precision)
+    atm = fakecell._atm
+    bas = fakecell._bas
+    env = fakecell._env
 
-    symbs = numpy.asarray(list(cell._pseudo.keys()))
-    symbs = numpy.sort(symbs)
-    rloc = []
-    charge = []
-    for symb in symbs:
-        rloc.append(cell._pseudo[symb][1])
-        charge.append(numpy.sum(cell._pseudo[symb][0]))
-    rloc = numpy.asarray(rloc)
-    charge = numpy.asarray(charge)
-    zeta = 1. / ((numpy.sqrt(2) * rloc) ** 2)
-    coeff = charge * ((zeta / numpy.pi) ** 1.5)
-
-    prec = precision ** 2
-    radius = pgf_rcut(0, zeta, coeff, precision=prec)
-    radius = numpy.asarray(radius, order='C', dtype=numpy.double)
-
-    atm = numpy.asarray(cell._atm[atm_id].copy().reshape(natm,-1), order='C', dtype=numpy.int32)
-    env = numpy.asarray(cell._env.copy(), order='C', dtype=numpy.double)
-    for ia, idx in enumerate(atm_id):
-        symb = cell.atom_symbol(idx)
-        if symb not in symbs:
-            logger.warn(cell, "No pseudo-potential found for symbol %s" % symb)
-            return None
-        else:
-            ikind = numpy.where(symb == symbs)[0]
-            atm[ia, PTR_KIND] = ikind
-            env[atm[ia, PTR_ZETA]] = zeta[ikind]
-
-    a = numpy.asarray(cell.lattice_vectors(), order='C', dtype=numpy.double)
+    a = numpy.asarray(cell.lattice_vectors(), order='C', dtype=float)
     if abs(a - numpy.diag(a.diagonal())).max() < 1e-12:
-        orth = 1
+        lattice_type = '_orth'
     else:
-        orth = 0
+        lattice_type = '_nonorth'
+        raise NotImplementedError
+    eval_fn = 'make_rho_lda' + lattice_type
 
-    b = numpy.asarray(numpy.linalg.inv(a.T), order='C', dtype=numpy.double)
+    b = numpy.asarray(numpy.linalg.inv(a.T), order='C', dtype=float)
     mesh = numpy.asarray(cell.mesh, order='C', dtype=numpy.int32)
-    rho_core = numpy.zeros((numpy.prod(mesh),), order='C', dtype=numpy.double)
-    func = getattr(libdft, 'build_core_density', None)
+    rho_core = numpy.zeros((numpy.prod(mesh),), order='C', dtype=float)
+    drv = getattr(libdft, 'build_core_density', None)
     try:
-        func(rho_core.ctypes.data_as(ctypes.c_void_p),
-             atm.ctypes.data_as(ctypes.c_void_p),
-             env.ctypes.data_as(ctypes.c_void_p),
-             ctypes.c_int(natm),
-             radius.ctypes.data_as(ctypes.c_void_p),
-             ctypes.c_int(len(radius)),
-             mesh.ctypes.data_as(ctypes.c_void_p),
-             ctypes.c_int(cell.dimension),
-             a.ctypes.data_as(ctypes.c_void_p),
-             b.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(orth))
+        drv(getattr(libdft, eval_fn),
+            rho_core.ctypes.data_as(ctypes.c_void_p),
+            atm.ctypes.data_as(ctypes.c_void_p),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(len(bas)),
+            env.ctypes.data_as(ctypes.c_void_p),
+            mesh.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(cell.dimension),
+            a.ctypes.data_as(ctypes.c_void_p),
+            b.ctypes.data_as(ctypes.c_void_p), ctypes.c_double(max_radius))
     except Exception as e:
         raise RuntimeError("Failed to compute rho_core. %s" % e)
     return rho_core
+
 
 def get_pp(mydf, kpts=None, max_memory=2000):
     if not mydf.pp_with_erf:
@@ -449,13 +420,13 @@ def _get_pp_without_erf(mydf, kpts=None, max_memory=2000):
         kpts_lst = numpy.reshape(kpts, (-1,3))
 
     vpp = pseudo.pp_int.get_pp_loc_part2(cell, kpts_lst)
-    vppnl = get_pp_nl(cell, kpts_lst)
+    vppnl = pp_int.get_pp_nl(cell, kpts_lst)
 
     for k, kpt in enumerate(kpts_lst):
         if gamma_point(kpt):
-            vpp[k] = vpp[k].real + vppnl[k].real #+ vpp1[k].real
+            vpp[k] = vpp[k].real + vppnl[k].real
         else:
-            vpp[k] += vppnl[k] #+ vpp1[k]
+            vpp[k] += vppnl[k]
 
     if kpts is None or numpy.shape(kpts) == (3,):
         vpp = vpp[0]
@@ -579,7 +550,7 @@ def _get_pp_with_erf(mydf, kpts=None, max_memory=2000):
 
     fn_pp_nl = vppnl_by_k
     if ngrids > MAX_BLKSIZE:
-        fn_pp_nl = get_pp_nl
+        fn_pp_nl = pp_int.get_pp_nl
 
     for k, kpt in enumerate(kpts_lst):
         vppnl = fn_pp_nl(cell, kpt)
@@ -593,61 +564,21 @@ def _get_pp_with_erf(mydf, kpts=None, max_memory=2000):
     return numpy.asarray(vpp)
 
 
-def get_vpploc_part1_ip1(mydf, kpts=numpy.zeros((1,3))):
-    from . import multigrid_pair
-
-    if mydf.pp_with_erf:
-        return 0
-
-    mesh = mydf.mesh
-    vG = mydf.vpplocG_part1
-    vG.reshape(-1,*mesh)
-
-    vpp_kpts = multigrid_pair._get_j_pass2_ip1(mydf, vG, kpts, hermi=0, deriv=1)
-    if gamma_point(kpts):
-        vpp_kpts = vpp_kpts.real
-    if len(kpts) == 1:
-        vpp_kpts = vpp_kpts[0]
-    return vpp_kpts
-
-
 def vpploc_part1_nuc_grad_generator(mydf, kpts=numpy.zeros((1,3))):
-    from . import multigrid_pair
+    if isinstance(mydf, MultiGridFFTDF2):
+        from . import multigrid_pair
+        return multigrid_pair.vpploc_part1_nuc_grad_generator(mydf, kpts=kpts)
+    else:
+        raise NotImplementedError
 
-    h1 = -get_vpploc_part1_ip1(mydf, kpts=kpts)
 
-    nkpts = len(kpts)
-    cell = mydf.cell
-    mesh = mydf.mesh
-    aoslices = cell.aoslice_by_atom()
-    def hcore_deriv(atm_id):
-        weight = cell.vol / numpy.prod(mesh)
-        rho_core = make_rho_core(cell, atm_id=[atm_id,])
-        rhoG_core = weight * tools.fft(rho_core, mesh)
-        coulG = tools.get_coulG(cell, mesh=mesh)
-        vpplocG_part1 = rhoG_core * coulG
-        # G = 0 contribution
-        symb = cell.atom_symbol(atm_id)
-        rloc = cell._pseudo[symb][1]
-        vpplocG_part1[0] += 2 * numpy.pi * (rloc * rloc * cell.atom_charge(atm_id))
-        vpplocG_part1.reshape(-1,*mesh)
-        vpp_kpts = multigrid_pair._get_j_pass2_ip1(mydf, vpplocG_part1, kpts, hermi=0, deriv=1)
-        if gamma_point(kpts):
-            vpp_kpts = vpp_kpts.real
-        if len(kpts) == 1:
-            vpp_kpts = vpp_kpts[0]
-
-        shl0, shl1, p0, p1 = aoslices[atm_id]
-        if nkpts > 1:
-            for k in range(nkpts):
-                vpp_kpts[k,:,p0:p1] += h1[k,:,p0:p1]
-                vpp_kpts[k] += vpp_kpts[k].transpose(0,2,1)
-        else:
-            vpp_kpts[:,p0:p1] += h1[:,p0:p1]
-            vpp_kpts += vpp_kpts.transpose(0,2,1)
-        return vpp_kpts
-
-    return hcore_deriv
+def vpploc_part1_nuc_grad(mydf, dm, kpts=numpy.zeros((1,3)), atm_id=None, precision=None):
+    if isinstance(mydf, MultiGridFFTDF2):
+        from . import multigrid_pair
+        return multigrid_pair.vpploc_part1_nuc_grad(
+                    mydf, dm, kpts=kpts, atm_id=atm_id, precision=precision)
+    else:
+        raise NotImplementedError
 
 
 def get_pp_nuc_grad(mydf, kpts=numpy.zeros((1,3)), atm_id=0):
@@ -2008,7 +1939,7 @@ class MultiGridFFTDF2(MultiGridFFTDF):
     pp_with_erf = getattr(__config__, 'pbc_dft_multigrid_pp_with_erf', False)
     ngrids = getattr(__config__, 'pbc_dft_multigrid_ngrids', 4)
     ke_ratio = getattr(__config__, 'pbc_dft_multigrid_ke_ratio', 3.0)
-    rel_cutoff = getattr(__config__, 'pbc_dft_multigrid_rel_cutoff', 15.0)
+    rel_cutoff = getattr(__config__, 'pbc_dft_multigrid_rel_cutoff', 20.0)
 
     def get_veff_ip1(self, dm, xc_code=None, kpts=None, kpts_band=None):
         from . import multigrid_pair
@@ -2022,7 +1953,7 @@ class MultiGridFFTDF2(MultiGridFFTDF):
         return vj
 
     get_pp_nuc_grad = get_pp_nuc_grad
-
+    vpploc_part1_nuc_grad = vpploc_part1_nuc_grad
 
 def multigrid(mf):
     '''Use MultiGridFFTDF to replace the default FFTDF integration method in
