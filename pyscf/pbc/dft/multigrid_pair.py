@@ -28,8 +28,7 @@ from pyscf.pbc.lib.kpts_helper import gamma_point
 from pyscf.pbc.df.df_jk import _format_dms, _format_kpts_band, _format_jks
 from pyscf.pbc.dft import multigrid
 from pyscf.pbc.dft.multigrid import (EXTRA_PREC, PTR_EXPDROP, EXPDROP, RHOG_HIGH_ORDER, IMAG_TOL,
-                                     _take_4d, _takebak_4d, _take_5d)
-from pyscf.pbc.gto.cell import build_neighbor_list_for_shlpairs
+                                     make_rho_core, _take_4d, _takebak_4d, _take_5d)
 
 NGRIDS = getattr(__config__, 'pbc_dft_multigrid_ngrids', 4)
 KE_RATIO = getattr(__config__, 'pbc_dft_multigrid_ke_ratio', 3.0)
@@ -40,7 +39,7 @@ libdft = lib.load_library('libdft')
 
 class GridLevel_Info(ctypes.Structure):
     '''
-    Info about grid levels
+    Info about the grid levels.
     '''
     _fields_ = [("nlevels", ctypes.c_int), # number of grid levels
                 ("rel_cutoff", ctypes.c_double),
@@ -49,7 +48,7 @@ class GridLevel_Info(ctypes.Structure):
 
 class RS_Grid(ctypes.Structure):
     '''
-    Values on real space multigrid
+    Values on real space multigrid.
     '''
     _fields_ = [("nlevels", ctypes.c_int),
                 ("gridlevel_info", ctypes.POINTER(GridLevel_Info)),
@@ -59,7 +58,7 @@ class RS_Grid(ctypes.Structure):
 
 class PGFPair(ctypes.Structure):
     '''
-    Primitive Gaussian function pair
+    A primitive Gaussian function pair.
     '''
     _fields_ = [("ish", ctypes.c_int),
                 ("ipgf", ctypes.c_int),
@@ -70,6 +69,9 @@ class PGFPair(ctypes.Structure):
 
 
 class Task(ctypes.Structure):
+    '''
+    A single task.
+    '''
     _fields_ = [("buf_size", ctypes.c_size_t),
                 ("ntasks", ctypes.c_size_t),
                 ("pgfpairs", ctypes.POINTER(ctypes.POINTER(PGFPair))),
@@ -77,6 +79,9 @@ class Task(ctypes.Structure):
 
 
 class TaskList(ctypes.Structure):
+    '''
+    A task list.
+    '''
     _fields_ = [("nlevels", ctypes.c_int),
                 ("hermi", ctypes.c_int),
                 ("gridlevel_info", ctypes.POINTER(GridLevel_Info)),
@@ -104,6 +109,41 @@ def multi_grids_tasks(cell, ke_cutoff=None, hermi=0,
     return task_list
 
 
+def _update_task_list(mydf, hermi=0, ngrids=None, ke_ratio=None, rel_cutoff=None):
+    '''
+    Update :attr:`task_list` if necessary.
+    '''
+    cell = mydf.cell
+    if ngrids is None:
+        ngrids = mydf.ngrids
+    if ke_ratio is None:
+        ke_ratio = mydf.ke_ratio
+    if rel_cutoff is None:
+        rel_cutoff = mydf.rel_cutoff
+
+    need_update = False
+    task_list = getattr(mydf, 'task_list', None)
+    if task_list is None:
+        need_update = True
+    else:
+        hermi_orig = task_list.contents.hermi
+        nlevels = task_list.contents.nlevels
+        rel_cutoff_orig = task_list.contents.gridlevel_info.contents.rel_cutoff
+        #TODO also need to check kenetic energy cutoff change
+        if (hermi_orig > hermi or
+                nlevels != ngrids or
+                abs(rel_cutoff_orig-rel_cutoff) > 1e-12):
+            need_update = True
+
+    if need_update:
+        if task_list is not None:
+            free_task_list(task_list)
+        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=ngrids,
+                                      ke_ratio=ke_ratio, rel_cutoff=rel_cutoff)
+        mydf.task_list = task_list
+    return task_list
+
+
 def init_gridlevel_info(cutoff, rel_cutoff, mesh):
     if cutoff[0] < 1e-15:
         cutoff = cutoff[1:]
@@ -122,6 +162,14 @@ def init_gridlevel_info(cutoff, rel_cutoff, mesh):
     return gridlevel_info
 
 
+def free_gridlevel_info(gridlevel_info):
+    fn = getattr(libdft, "del_gridlevel_info", None)
+    try:
+        fn(ctypes.byref(gridlevel_info))
+    except Exception as e:
+        raise RuntimeError("Failed to free grid level info. %s" % e)
+
+
 def init_rs_grid(gridlevel_info, comp):
     '''
     Initialize values on real space multigrid
@@ -137,26 +185,61 @@ def init_rs_grid(gridlevel_info, comp):
     return rs_grid
 
 
-def build_task_list(cell0, gridlevel_info, cell1=None, Ls=None, hermi=0, precision=None):
+def free_rs_grid(rs_grid):
+    fn = getattr(libdft, "del_rs_grid", None)
+    try:
+        fn(ctypes.byref(rs_grid))
+    except Exception as e:
+        raise RuntimeError("Failed to free real space multigrid data. %s" % e)
+
+
+def build_task_list(cell, gridlevel_info, cell1=None, Ls=None, hermi=0, precision=None):
+    '''
+    Build the task list for multigrid DFT calculations.
+
+    Arguments:
+        cell : :class:`pbc.gto.cell.Cell`
+            The :class:`Cell` instance for the bra basis functions.
+        gridlevel_info : :class:`ctypes.POINTER`
+            The C pointer of the :class:`GridLevel_Info` structure.
+        cell1 : :class:`pbc.gto.cell.Cell`, optional
+            The :class:`Cell` instance for the ket basis functions.
+            If not given, both bra and ket basis functions come from cell.
+        Ls : (*,3) array, optional
+            The cartesian coordinates of the periodic images.
+            Default is calculated by :func:`cell.get_lattice_Ls`.
+        hermi : int, optional
+            If :math:`hermi=1`, the task list is built only for
+            the upper triangle of the matrix. Default is 0.
+        precision : float, optional
+            The integral precision. Default is :attr:`cell.precision`.
+
+    Returns: :class:`ctypes.POINTER`
+        The C pointer of the :class:`TaskList` structure.
+    '''
+    from pyscf.pbc.gto.cell import build_neighbor_list_for_shlpairs
     if cell1 is None:
-        cell1 = cell0
+        cell1 = cell
     if Ls is None:
-        Ls = cell0.get_lattice_Ls()
+        Ls = cell.get_lattice_Ls()
     if precision is None:
-        precision = cell0.precision
+        precision = cell.precision
 
-    if hermi == 1:
-        assert cell1 is cell0
+    if hermi == 1 and cell1 is not cell:
+        logger.warn(cell,
+                    "Set hermi=0 because cell and cell1 are not the same.")
+        hermi = 0
 
-    ish_atm = np.asarray(cell0._atm, order='C', dtype=np.int32)
-    ish_bas = np.asarray(cell0._bas, order='C', dtype=np.int32)
-    ish_env = np.asarray(cell0._env, order='C', dtype=np.double)
+    ish_atm = np.asarray(cell._atm, order='C', dtype=np.int32)
+    ish_bas = np.asarray(cell._bas, order='C', dtype=np.int32)
+    ish_env = np.asarray(cell._env, order='C', dtype=float)
     nish = len(ish_bas)
-
-    ish_rcut, ipgf_rcut = cell0.rcut_by_shells(return_pgf_radius=True)
+    ish_rcut, ipgf_rcut = cell.rcut_by_shells(precision=precision,
+                                              return_pgf_radius=True)
+    assert nish == len(ish_rcut)
     ptr_ipgf_rcut = lib.ndarray_pointer_2d(ipgf_rcut)
 
-    if cell1 is cell0:
+    if cell1 is cell:
         jsh_atm = ish_atm
         jsh_bas = ish_bas
         jsh_env = ish_env
@@ -166,13 +249,14 @@ def build_task_list(cell0, gridlevel_info, cell1=None, Ls=None, hermi=0, precisi
     else:
         jsh_atm = np.asarray(cell1._atm, order='C', dtype=np.int32)
         jsh_bas = np.asarray(cell1._bas, order='C', dtype=np.int32)
-        jsh_env = np.asarray(cell1._env, order='C', dtype=np.double)
-
-        jsh_rcut, jpgf_rcut = cell1.rcut_by_shells(return_pgf_radius=True)
+        jsh_env = np.asarray(cell1._env, order='C', dtype=float)
+        jsh_rcut, jpgf_rcut = cell1.rcut_by_shells(precision=precision,
+                                                   return_pgf_radius=True)
         ptr_jpgf_rcut = lib.ndarray_pointer_2d(jpgf_rcut)
     njsh = len(jsh_bas)
+    assert njsh == len(jsh_rcut)
 
-    nl = build_neighbor_list_for_shlpairs(cell0, cell1,
+    nl = build_neighbor_list_for_shlpairs(cell, cell1, Ls=Ls,
                                           ish_rcut=ish_rcut, jsh_rcut=jsh_rcut,
                                           hermi=hermi)
 
@@ -195,8 +279,20 @@ def build_task_list(cell0, gridlevel_info, cell1=None, Ls=None, hermi=0, precisi
              Ls.ctypes.data_as(ctypes.c_void_p),
              ctypes.c_double(precision), ctypes.c_int(hermi))
     except Exception as e:
-        raise RuntimeError("Failed to get task list. %s" % e)
+        raise RuntimeError("Failed to build task list. %s" % e)
     return task_list
+
+
+def free_task_list(task_list):
+    '''
+    Note:
+        This will also free task_list.contents.gridlevel_info.
+    '''
+    func = getattr(libdft, "del_task_list", None)
+    try:
+        func(ctypes.byref(task_list))
+    except Exception as e:
+        raise RuntimeError("Failed to free task list. %s" % e)
 
 
 def eval_rho(cell, dm, task_list, shls_slice=None, hermi=0, xctype='LDA', kpts=None,
@@ -340,19 +436,15 @@ def eval_rho(cell, dm, task_list, shls_slice=None, hermi=0, xctype='LDA', kpts=N
 
 def _eval_rhoG(mydf, dm_kpts, hermi=1, kpts=np.zeros((1,3)), deriv=0,
                rhog_high_order=RHOG_HIGH_ORDER):
+    assert(deriv < 2)
     cell = mydf.cell
 
     dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-
-    assert(deriv < 2)
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     gga_high_order = False
     if deriv == 0:
@@ -402,12 +494,19 @@ def _eval_rhoG(mydf, dm_kpts, hermi=1, kpts=np.zeros((1,3)), deriv=0,
         gz = np.fft.fftfreq(mesh[2], 1./mesh[2]).astype(np.int32)
         _takebak_4d(rhoG, rho_freq.reshape((-1,) + tuple(mesh)), (None, gx, gy, gz))
 
+    if nset > 1:
+        for i in range(nset):
+            free_rs_grid(rs_rho[i])
+    else:
+        free_rs_grid(rs_rho)
+
     rhoG = rhoG.reshape(nset,rhodim,-1)
 
     if gga_high_order:
         Gv = cell.get_Gv(mydf.mesh)
-        rhoG1 = np.einsum('np,px->nxp', 1j*rhoG[:,0], Gv)
-        rhoG = np.concatenate([rhoG, rhoG1], axis=1)
+        #rhoG1 = np.einsum('np,px->nxp', 1j*rhoG[:,0], Gv)
+        rhoG1 = cell.contract_rhoG_Gv(rhoG, Gv)
+        rhoG = lib.concatenate([rhoG, rhoG1], axis=1)
     return rhoG
 
 
@@ -568,15 +667,8 @@ def _get_j_pass2(mydf, vG, kpts=np.zeros((1,3)), hermi=1, verbose=None):
     vG = vG.reshape(-1,nx,ny,nz)
     nset = vG.shape[0]
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-    if hermi < task_list.contents.hermi:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     at_gamma_point = gamma_point(kpts)
     if at_gamma_point:
@@ -627,15 +719,8 @@ def _get_j_pass2_ip1(mydf, vG, kpts=np.zeros((1,3)), hermi=0, deriv=1, verbose=N
     vG = vG.reshape(-1,nx,ny,nz)
     nset = vG.shape[0]
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-    if hermi < task_list.contents.hermi:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     at_gamma_point = gamma_point(kpts)
     if at_gamma_point:
@@ -680,15 +765,8 @@ def _get_gga_pass2(mydf, vG, kpts=np.zeros((1,3)), hermi=1, verbose=None):
     vG = vG.reshape(-1,4,nx,ny,nz)
     nset = vG.shape[0]
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-    if hermi < task_list.contents.hermi:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     if gamma_point(kpts):
         veff = np.zeros((nset,nkpts,nao,nao))
@@ -711,7 +789,8 @@ def _get_gga_pass2(mydf, vG, kpts=np.zeros((1,3)), hermi=1, verbose=None):
 
         mat = np.asarray(eval_mat(cell, wv, task_list, comp=1, hermi=hermi,
                          xctype='GGA', kpts=kpts, grid_level=ilevel, mesh=mesh)).reshape(nset,-1,nao,nao)
-        veff += mat #+ mat.conj().transpose(0,1,3,2)
+        #veff += mat #+ mat.conj().transpose(0,1,3,2)
+        veff = lib.add(veff, mat, out=veff)
         if not gamma_point(kpts):
             raise NotImplementedError
 
@@ -734,15 +813,8 @@ def _get_gga_pass2_ip1(mydf, vG, kpts=np.zeros((1,3)), hermi=0, deriv=1, verbose
     vG = vG.reshape(-1,4,nx,ny,nz)
     nset = vG.shape[0]
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-    if hermi < task_list.contents.hermi:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     at_gamma_point = gamma_point(kpts)
     if at_gamma_point:
@@ -783,8 +855,9 @@ def _rks_gga_wv0(rho, vxc, weight):
     vrho, vgamma = vxc[:2]
     ngrid = vrho.size
     wv = np.empty((4,ngrid))
-    wv[0]  = weight * vrho
-    wv[1:] = (weight * vgamma * 2) * rho[1:4]
+    wv[0]  = lib.multiply(weight, vrho, out=wv[0])
+    for i in range(1, 4):
+        wv[i] = lib.multiply(weight * 2, lib.multiply(vgamma, rho[i], out=wv[i]), out=wv[i])
     return wv
 
 
@@ -813,20 +886,29 @@ def nr_rks(mydf, xc_code, dm_kpts, hermi=1, kpts=None,
     mesh = mydf.mesh
     ngrids = np.prod(mesh)
     coulG = tools.get_coulG(cell, mesh=mesh)
-    vG = np.einsum('ng,g->ng', rhoG[:,0], coulG)
+    #vG = np.einsum('ng,g->ng', rhoG[:,0], coulG)
+    vG = np.empty_like(rhoG[:,0], dtype=np.result_type(rhoG[:,0], coulG))
+    for i, rhoG_i in enumerate(rhoG[:,0]):
+        vG[i] = lib.multiply(rhoG_i, coulG, out=vG[i])
 
     if mydf.vpplocG_part1 is not None and not mydf.pp_with_erf:
         for i in range(nset):
-            vG[i] += mydf.vpplocG_part1 * 2
+            #vG[i] += mydf.vpplocG_part1 * 2
+            vG[i] = lib.add(vG[i], lib.multiply(2., mydf.vpplocG_part1), out=vG[i])
 
-    ecoul = .5 * np.einsum('ng,ng->n', rhoG[:,0].real, vG.real)
-    ecoul+= .5 * np.einsum('ng,ng->n', rhoG[:,0].imag, vG.imag)
+    #ecoul = .5 * np.einsum('ng,ng->n', rhoG[:,0].real, vG.real)
+    #ecoul+= .5 * np.einsum('ng,ng->n', rhoG[:,0].imag, vG.imag)
+    ecoul = np.zeros((rhoG.shape[0],))
+    for i in range(rhoG.shape[0]):
+        ecoul[i] = .5 * lib.vdot(rhoG[i,0], vG[i]).real
+
     ecoul /= cell.vol
     log.debug('Multigrid Coulomb energy %s', ecoul)
 
     if mydf.vpplocG_part1 is not None and not mydf.pp_with_erf:
         for i in range(nset):
-            vG[i] -= mydf.vpplocG_part1
+            #vG[i] -= mydf.vpplocG_part1
+            vG[i] = lib.subtract(vG[i], mydf.vpplocG_part1, out=vG[i])
 
     weight = cell.vol / ngrids
     # *(1./weight) because rhoR is scaled by weight in _eval_rhoG.  When
@@ -843,11 +925,15 @@ def nr_rks(mydf, xc_code, dm_kpts, hermi=1, kpts=None,
         elif xctype == 'GGA':
             wv = _rks_gga_wv0(rhoR[i], vxc, weight)
 
-        nelec[i] += rhoR[i,0].sum() * weight
-        excsum[i] += (rhoR[i,0]*exc).sum() * weight
+        nelec[i] += lib.sum(rhoR[i,0]) * weight
+        excsum[i] += lib.sum(lib.multiply(rhoR[i,0],exc)) * weight
         wv_freq.append(tools.fft(wv, mesh))
     rhoR = rhoG = None
-    wv_freq = np.asarray(wv_freq).reshape(nset,-1,*mesh)
+
+    if len(wv_freq) == 1:
+        wv_freq = wv_freq[0].reshape(nset,-1,*mesh)
+    else:
+        wv_freq = np.asarray(wv_freq).reshape(nset,-1,*mesh)
 
     if nset == 1:
         ecoul = ecoul[0]
@@ -1042,15 +1128,8 @@ def get_k_kpts(mydf, dm_kpts, hermi=0, kpts=None,
     ngrids = np.prod(mesh)
     coulG = tools.get_coulG(cell, mesh=mesh).reshape(-1, *mesh)
 
-    task_list = getattr(mydf, 'task_list', None)
-    if task_list is None:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
-    if hermi < task_list.contents.hermi:
-        task_list = multi_grids_tasks(cell, hermi=hermi, ngrids=mydf.ngrids,
-                                      ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
-        mydf.task_list = task_list
+    task_list = _update_task_list(mydf, hermi=hermi, ngrids=mydf.ngrids,
+                                  ke_ratio=mydf.ke_ratio, rel_cutoff=mydf.rel_cutoff)
 
     at_gamma_point = gamma_point(kpts)
     if at_gamma_point:
