@@ -29,7 +29,7 @@ if (CMAKE_COMPILER_IS_GNUCC) # Does it skip the link flag on old OsX?
     set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-as-needed")
   endif()
 endif()
-set(CMAKE_C_FLAGS "-Wall ${CMAKE_C_FLAGS}")
+set(CMAKE_C_FLAGS "-Wall -std=c99 ${CMAKE_C_FLAGS}")
 
 option(BUILD_MARCH_NATIVE "gcc flag -march=native" off)
 if (BUILD_MARCH_NATIVE)
@@ -203,7 +203,7 @@ if(ENABLE_LIBXC AND BUILD_LIBXC)
   ExternalProject_Add(libxc
     #GIT_REPOSITORY https://gitlab.com/libxc/libxc.git
     #GIT_TAG master
-    #URL https://gitlab.com/libxc/libxc/-/archive/5.1.5/libxc-5.1.5.tar.gz
+    #URL https://gitlab.com/libxc/libxc/-/archive/5.1.7/libxc-5.1.7.tar.gz
     #URL https://github.com/MoleOrbitalHybridAnalyst/libxc_copy/archive/refs/tags/5.1.5m2.tar.gz
     URL https://github.com/MoleOrbitalHybridAnalyst/libxc_copy/archive/refs/heads/main.zip
     PREFIX ${PROJECT_BINARY_DIR}/deps
