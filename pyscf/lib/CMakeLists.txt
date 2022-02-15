@@ -16,7 +16,7 @@ cmake_minimum_required (VERSION 3.5)
 project (pyscf)
 
 if (NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE RELWITHDEBINFO)
+  set(CMAKE_BUILD_TYPE Release)
 endif()
 #set(CMAKE_BUILD_TYPE DEBUG)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
@@ -44,6 +44,38 @@ if (BUILD_MARCH_NATIVE)
       message("Add CFLAGS -march=native -ftree-vectorize")
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native -funroll-loops -ftree-vectorize")
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-math-errno")
+    endif()
+  endif()
+endif()
+
+option(BUILD_WITH_AVX2 "set avx2 flags" OFF)
+if(BUILD_WITH_AVX2)
+  include(CheckCCompilerFlag)
+  if("${CMAKE_C_COMPILER_ID}" STREQUAL "Intel")
+    CHECK_C_COMPILER_FLAG("-axAVX2" COMPILER_SUPPORTS_AVX)
+    if (COMPILER_SUPPORTS_AVX)
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -axAVX2")
+    endif()
+  else()
+    CHECK_C_COMPILER_FLAG("-mavx2" COMPILER_SUPPORTS_AVX)
+    if (COMPILER_SUPPORTS_AVX)
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mavx2 -ftree-vectorize")
+    endif()
+  endif()
+endif()
+
+option(BUILD_WITH_AVX512 "set avx512 flags" OFF)
+if(BUILD_WITH_AVX512)
+  include(CheckCCompilerFlag)
+  if("${CMAKE_C_COMPILER_ID}" STREQUAL "Intel")
+    CHECK_C_COMPILER_FLAG("-axCORE-AVX512" COMPILER_SUPPORTS_AVX)
+    if (COMPILER_SUPPORTS_AVX)
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -axCORE-AVX512")
+    endif()
+  else()
+    CHECK_C_COMPILER_FLAG("-mavx512f -mavx512dq" COMPILER_SUPPORTS_AVX)
+    if (COMPILER_SUPPORTS_AVX)
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mavx512f -mavx512dq")
     endif()
   endif()
 endif()
@@ -194,6 +226,12 @@ option(ENABLE_XCFUN "Using xcfun for XC functional library" ON)
 option(BUILD_LIBXC "Download and build libxc library" ON)
 option(BUILD_XCFUN "Download and build xcfun library" ON)
 
+option(ENABLE_LIBXSMM "Using libxsmm" OFF)
+option(BUILD_LIBXSMM "Building libxsmm" ON)
+if(APPLE)
+    set(ENABLE_LIBXSMM OFF)
+endif()
+
 if(NOT DISABLE_DFT)
 add_subdirectory(dft)
 
@@ -239,6 +277,22 @@ if(ENABLE_XCFUN AND BUILD_XCFUN)
   add_dependencies(xcfun_itrf libxcfun)
   add_dependencies(dft libxcfun)
 endif() # ENABLE_XCFUN
+
+if(ENABLE_LIBXSMM AND BUILD_LIBXSMM)
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/deps/include/libxsmm.h")
+    ExternalProject_Add(libxsmm
+      GIT_REPOSITORY https://github.com/hfp/libxsmm.git
+      GIT_TAG 1.17
+      PREFIX ${PROJECT_BINARY_DIR}/deps
+      INSTALL_DIR ${PROJECT_SOURCE_DIR}/deps
+      CONFIGURE_COMMAND ""
+      BUILD_IN_SOURCE True
+      BUILD_COMMAND make -j4 PREFIX=<INSTALL_DIR> CXX=${CMAKE_CXX_COMPILER} CC=${CMAKE_C_COMPILER} STATIC=0 MALLOC=0 INTRINSICS=2 install
+      INSTALL_COMMAND ""
+    )
+    add_dependencies(dft libxsmm)
+  endif()
+endif()
 endif() # DISABLE_DFT
 
 if(EXISTS "${PROJECT_SOURCE_DIR}/cmake.user.inc")
