@@ -37,6 +37,22 @@ void NPzset0(double complex *p, const size_t n)
 
 void NPdcopy(double *out, const double *in, const size_t n)
 {
+        size_t i;
+        for (i = 0; i < n; i++) {
+                out[i] = in[i];
+        }
+}
+
+void NPzcopy(double complex *out, const double complex *in, const size_t n)
+{
+        size_t i;
+        for (i = 0; i < n; i++) {
+                out[i] = in[i];
+        }
+}
+
+void NPdcopy_omp(double *out, const double *in, const size_t n)
+{
 #pragma omp parallel
 {
         size_t i;
@@ -47,7 +63,7 @@ void NPdcopy(double *out, const double *in, const size_t n)
 }
 }
 
-void NPzcopy(double complex *out, const double complex *in, const size_t n)
+void NPzcopy_omp(double complex *out, const double complex *in, const size_t n)
 {
 #pragma omp parallel
 {
@@ -210,7 +226,8 @@ void NPdsum(double* out, double* a, int lda, int n)
     size_t ncol = (size_t) lda;
 
     if (ncol > nrow) {
-        for (size_t i = 0; i < nrow; i++) {
+        size_t i;
+        for (i = 0; i < nrow; i++) {
             out[i] = 0;
             double* aa = a + i*ncol;
 #pragma omp parallel

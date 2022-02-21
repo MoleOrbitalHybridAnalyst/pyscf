@@ -620,7 +620,9 @@ def rcut_by_shells(cell, precision=None, rcut=5., return_pgf_radius=False):
 
 class NeighborPair(ctypes.Structure):
     _fields_ = [("nimgs", ctypes.c_int),
-                ("Ls_list", ctypes.POINTER(ctypes.c_int))]
+                ("Ls_list", ctypes.POINTER(ctypes.c_int)),
+                ("q_cond", ctypes.POINTER(ctypes.c_double)),
+                ("center", ctypes.POINTER(ctypes.c_double))]
 
 class NeighborList(ctypes.Structure):
     _fields_ = [("nish", ctypes.c_int),
@@ -1359,6 +1361,10 @@ class Cell(mole.Mole):
             infinity vacuum (inf_vacuum) or truncated Coulomb potential
             (analytic_2d_1). Unless explicitly specified, analytic_2d_1 is
             used for 2D system and inf_vacuum is assumed for 1D and 0D.
+        rcut_by_shell_radius : bool
+            If True, radius cutoff is determined by shell radius;
+            otherwise, it is determined by overlap integral.
+            Default value is False;
 
     (See other attributes in :class:`Mole`)
 
@@ -1387,6 +1393,7 @@ class Cell(mole.Mole):
         #       density-fitting class.  This determines how the ewald produces
         #       its energy.
         self.low_dim_ft_type = None
+        self.rcut_by_shell_radius = False
 
 ##################################################
 # These attributes are initialized by build function if not given
@@ -1679,8 +1686,11 @@ class Cell(mole.Mole):
             return self
 
         if self.rcut is None or self._rcut_from_build:
-            self._rcut = max([self.bas_rcut(ib, self.precision)
-                              for ib in range(self.nbas)] + [0])
+            if not self.rcut_by_shell_radius:
+                self._rcut = max([self.bas_rcut(ib, self.precision)
+                                  for ib in range(self.nbas)] + [0])
+            else:
+                self._rcut = max(0, rcut_by_shells(self).max())
             self._rcut_from_build = True
 
         _a = self.lattice_vectors()

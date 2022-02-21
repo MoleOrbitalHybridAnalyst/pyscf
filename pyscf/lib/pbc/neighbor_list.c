@@ -10,6 +10,8 @@ void init_neighbor_pair(NeighborPair** np, int nimgs, int* Ls_list)
 {
     NeighborPair *np0 = (NeighborPair*) malloc(sizeof(NeighborPair));
     np0->nimgs = nimgs;
+    np0->q_cond = NULL;
+    np0->center = NULL;
     if (nimgs > 0){
         np0->Ls_list = (int*) malloc(sizeof(int)*nimgs);
         int i;
@@ -31,6 +33,12 @@ void del_neighbor_pair(NeighborPair** np)
     }
     if (np0->Ls_list) {
         free(np0->Ls_list);
+    }
+    if (np0->q_cond) {
+        free(np0->q_cond);
+    }
+    if (np0->center) {
+        free(np0->center);
     }
     free(np0);
     *np = NULL;
@@ -111,10 +119,12 @@ void del_neighbor_list(NeighborList** nl)
     int nish = nl0->nish;
     int njsh = nl0->njsh;
     if (nl0->pairs) {
-        for (ish=0; ish<nish; ish++)
+        for (ish=0; ish<nish; ish++) {
             for (jsh=0; jsh<njsh; jsh++) {
                 del_neighbor_pair(nl0->pairs + ish*njsh+jsh);
-            } 
+            }
+        }
+        free(nl0->pairs);
     }
     free(nl0);
     *nl = NULL;

@@ -106,17 +106,20 @@ void del_rs_grid(RS_Grid** rs_grid)
     if (!rg) {
         return;
     }
-    int i;
-    for (i = 0; i < rg->nlevels; i++) {
-        if (rg->data[i]) {
-            free(rg->data[i]);
+    if (rg->data) {
+        int i;
+        for (i = 0; i < rg->nlevels; i++) {
+            if (rg->data[i]) {
+                free(rg->data[i]);
+            }
         }
+        free(rg->data);
     }
-    free(rg->data);
     rg->gridlevel_info = NULL;
     free(rg);
     *rs_grid = NULL;
 }
+
 
 void del_gridlevel_info(GridLevel_Info** gridlevel_info)
 {
@@ -221,6 +224,8 @@ void del_pgfpair(PGFPair** pair_info)
     PGFPair *pair0 = *pair_info;
     if (!pair0) {
         return;
+    } else {
+        free(pair0);
     }
     *pair_info = NULL;
 }
@@ -246,13 +251,14 @@ void del_task(Task** task)
     if (!t0) {
         return;
     }
-    size_t i, buf_size = t0->buf_size;
-    for (i = 0; i < buf_size; i++) {
-        if ((t0->pgfpairs)[i]) {
+    if (t0->pgfpairs) {
+        size_t i, ntasks = t0->ntasks;
+        for (i = 0; i < ntasks; i++) {
             del_pgfpair(t0->pgfpairs + i);
         }
+        free(t0->pgfpairs);
     }
-    free(t0->pgfpairs); 
+    free(t0);
     *task = NULL;
 }
 
@@ -274,22 +280,27 @@ void init_task_list(TaskList** task_list, GridLevel_Info* gridlevel_info, int nl
 
 void del_task_list(TaskList** task_list)
 {
-    TaskList* tl = *task_list;
+    TaskList *tl = *task_list;
     if (!tl) {
         return;
     }
     if (tl->gridlevel_info) {
         del_gridlevel_info(&(tl->gridlevel_info));
+        tl->gridlevel_info = NULL;
     }
-    tl->gridlevel_info = NULL;
-    int i;
-    for (i = 0; i < tl->nlevels; i++) {
-        if ((tl->tasks)[i]) {
-            del_task(tl->tasks + i);
+    if (tl->tasks) {
+        int i;
+        for (i = 0; i < tl->nlevels; i++) {
+            if ((tl->tasks)[i]) {
+                del_task(tl->tasks + i);
+            }
         }
+        free(tl->tasks);
     }
+    free(tl);
     *task_list = NULL;
 }
+
 
 void update_task_list(TaskList** task_list, int grid_level, 
                       int ish, int ipgf, int jsh, int jpgf, int iL, double radius)
