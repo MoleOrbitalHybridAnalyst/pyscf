@@ -285,6 +285,145 @@ class SocketClient:
             pass
 
 
+class SocketClients:
+
+    def __init__(self, hosts=None, ports=None,
+                 unixsockets=None, timeouts=None, paces=None,
+                 logs=None):
+
+        socks = list()
+
+        if hosts is None:
+            assert unixsockets is not None
+            hosts = ['localhost'] * len(unixsockets)
+
+        if unixsockets is not None:
+            assert len(hosts) == len(unixsockets)
+            for unixsocket in unixsockets:
+                sock = socket.socket(socket.AF_UNIX)
+                actualsocket = actualunixsocketname(unixsocket)
+                sock.connect(actualsocket)
+                socks.append(sock)
+        else:
+            assert ports is not None
+            assert len(ports) == len(hosts)
+            for host, port in zip(hosts, ports):
+                sock = socket.socket(socket.AF_INET)
+                sock.connect((host, port))
+                socks.append(sock)
+        if timeouts is None:
+            timeouts = [None] * len(hosts)
+        for sock, timeout in zip(socks, timeouts):
+            sock.settimeout(timeout)
+
+        if paces is None:
+            paces = [1] * len(hosts)
+        if logs is None:
+            paces = [None] * len(hosts)
+
+        self.hosts = hosts
+        self.ports = ports
+        self.unixsockets = unixsockets
+        self.paces = paces
+
+        self.protocols = [IPIProtocol(sock, txt=log) \
+                for sock,log in zip(socks,logs)]
+        self.logs = [p.log for p in self.protocols]
+        self.closed = [False] * len(hosts)
+
+        self.states = ['READY'] * len(hosts)
+
+        self.istep = 0
+
+    def close(self):
+        for i in len(self.hosts):
+            if not self.closed[i]:
+                self.logs[i](f'Close SocketClient {i}')
+                self.closed[i] = True
+                self.protocols[i].socket.close()
+
+    def calculate(self, atoms, use_stress):
+        
+        energy, forces, virial = atoms.get_efv()
+
+        if use_stress:
+            assert virial is not None
+        else:
+            virial = np.zeros((3,3))
+
+        return energy, forces, virial
+
+    def run(self, atoms_list, use_stress=None):
+        assert len(atoms_list) == len(self.hosts)
+        if use_stress is None:
+            use_stress = False
+
+        nhosts = len(self.hosts)
+        msgs = [''] * nhosts
+
+        equeue = list()
+        fqueue = list()
+        vqueue = list() 
+
+        # status = 1 means sent force
+        # status = 2 means sent READY after sent force
+        #            which is basically end of one MD
+        status = [0] * nhosts  
+
+        while True:
+
+            for i in range(nhosts):
+                if sum(status) == 2 * nhosts:
+                    # every one finishes their jobs
+                    # move on to next step
+                    self.istep += 1
+                    status = [0] * nhosts
+
+                if status[i] == 2:
+                    # this client has done its job
+                    # so do not try to receive msg until next step
+                    continue
+                if i > 0 and status[i-1] < 2:
+                    # the previous clients have not finished their jobs
+                    # so do not start doing my job
+                    continue
+                if self.istep % self.paces[i] != 0:
+                    # I am not needed at this step
+                    # so I finish my job by doing nothing
+                    status[i] = 2
+                    continue
+
+                try:
+                    msgs[i] = self.protocols[i].recvmsg()
+                except SocketClosed:
+                    msgs[i] = 'EXIT'
+
+
+                if msgs[i] == 'EXIT':
+                    return
+                elif msgs[i] == 'STATUS':
+                    self.protocols[i].sendmsg(self.states[i])
+                    if status[i] > 0:
+                        status[i] += 1
+                elif msgs[i] == 'POSDATA':
+                    assert self.states[i] == 'READY'
+                    cell, icell, positions = self.protocols[i].recvposdata()
+                    atoms_list[i].set_positions_box(positions, cell)
+                    energy, forces, virial = self.calculate(atoms_list[i], use_stress)
+                    equeue.append(energy)
+                    fqueue.append(forces)
+                    vqueue.append(virial)
+                    self.states[i] = 'HAVEDATA'
+                elif msgs[i] == 'GETFORCE':
+                    assert self.states[i] == 'HAVEDATA', self.states[i]
+                    self.protocols[i].sendforce(equeue.pop(0), fqueue.pop(0), vqueue.pop(0))
+                    self.states[i] = 'READY'
+                    status[i] = 1
+                else:
+                    raise KeyError('Bad message', msgs[i])
+
+
+
 class Atoms:
     def __init__(self, efv_scan):
         import copy
