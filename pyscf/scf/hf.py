@@ -258,6 +258,12 @@ Keyword argument "init_dm" is replaced by "dm0"''')
     logger.timer(mf, 'scf_cycle', *cput0)
     # A post-processing hook before return
     mf.post_kernel(locals())
+
+    # @@@@@@@
+    if 'save_fock' in kwargs and kwargs['save_fock']:
+        mf.fock = fock
+    # @@@@@@@
+
     return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
 
 
@@ -1492,6 +1498,10 @@ class SCF(lib.StreamObject):
                     'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
                     'direct_scf', 'direct_scf_tol', 'conv_check'))
         self._keys = set(self.__dict__.keys()).union(keys)
+
+        # @@@@@@@
+        self.fock = None
+        # @@@@@@@
 
     def build(self, mol=None):
         if mol is None: mol = self.mol
