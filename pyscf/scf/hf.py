@@ -360,7 +360,7 @@ def get_ovlp(mol):
     return mol.intor_symmetric('int1e_ovlp')
 
 
-def init_guess_by_minao(mol):
+def init_guess_by_minao(mol, charges=None):
     '''Generate initial guess density matrix based on ANO basis, then project
     the density matrix to the basis set defined by ``mol``
 
@@ -378,7 +378,7 @@ def init_guess_by_minao(mol):
     from pyscf.scf import atom_hf
     from pyscf.scf import addons
 
-    def minao_basis(symb, nelec_ecp):
+    def minao_basis(symb, nelec_ecp, charge=None):
         occ = []
         basis_ano = []
         if gto.is_ghost_atom(symb):
@@ -389,12 +389,23 @@ def init_guess_by_minao(mol):
 # coreshl defines the core shells to be removed in the initial guess
         coreshl = gto.ecp.core_configuration(nelec_ecp)
         #coreshl = (0,0,0,0)  # it keeps all core electrons in the initial guess
+        # determine lmax
+        if charge is not None:
+            lmax = atom_hf.lmax(stdsymb)
+        else:
+            lmax = -1
         for l in range(4):
-            ndocc, frac = atom_hf.frac_occ(stdsymb, l)
+            if l == lmax:
+                ndocc, frac = atom_hf.frac_occ(stdsymb, l, modcharge=charge)
+            else:
+                ndocc, frac = atom_hf.frac_occ(stdsymb, l)
             assert ndocc >= coreshl[l]
             degen = l * 2 + 1
             occ_l = [2,]*(ndocc-coreshl[l]) + [frac,]
             occ.append(numpy.repeat(occ_l, degen))
+            #@@@@@@@@@
+            #print(ndocc, frac, occ_l, occ)
+            #@@@@@@@@@
             basis_ano.append([l] + [b[:1] + b[1+coreshl[l]:ndocc+2]
                                     for b in basis_add[l][1:]])
         occ = numpy.hstack(occ)
@@ -456,22 +467,38 @@ def init_guess_by_minao(mol):
     nelec_ecp_dic = dict([(mol.atom_symbol(ia), mol.atom_nelec_core(ia))
                           for ia in range(mol.natm)])
 
-    basis = {}
-    occdic = {}
-    for symb, nelec_ecp in nelec_ecp_dic.items():
-        occ_add, basis_add = minao_basis(symb, nelec_ecp)
-        occdic[symb] = occ_add
-        basis[symb] = basis_add
-
-    occ = []
-    new_atom = []
-    for ia in range(mol.natm):
-        symb = mol.atom_symbol(ia)
-        if not gto.is_ghost_atom(symb):
-            occ.append(occdic[symb])
-            new_atom.append(mol._atom[ia])
+    if charges is None:
+        basis = {}
+        occdic = {}
+        for symb, nelec_ecp in nelec_ecp_dic.items():
+            occ_add, basis_add = minao_basis(symb, nelec_ecp)
+            occdic[symb] = occ_add
+            basis[symb] = basis_add
+    
+        occ = []
+        new_atom = []
+        for ia in range(mol.natm):
+            symb = mol.atom_symbol(ia)
+            if not gto.is_ghost_atom(symb):
+                occ.append(occdic[symb])
+                new_atom.append(mol._atom[ia])
+    else:
+        basis = {}
+        occ = []
+        new_atom = []
+        for ia in range(mol.natm):
+            symb = mol.atom_symbol(ia)
+            nelec_ecp = nelec_ecp_dic[symb]
+            occ_add, basis_add = minao_basis(symb, nelec_ecp, charges[ia])
+            basis[symb] = basis_add  # this may be overwritten for many times
+            if not gto.is_ghost_atom(symb):
+                occ.append(occ_add)
+                new_atom.append(mol._atom[ia])
     occ = numpy.hstack(occ)
 
+    #@@@@@@@@@@
+    print(occ)
+    #@@@@@@@@@@
     pmol = gto.Mole()
     pmol._atm, pmol._bas, pmol._env = pmol.make_env(new_atom, basis, [])
     pmol._built = True
@@ -1583,9 +1610,13 @@ class SCF(lib.StreamObject):
         return self
 
     @lib.with_doc(init_guess_by_minao.__doc__)
-    def init_guess_by_minao(self, mol=None):
+    def init_guess_by_minao(self, mol=None, charges=None):
         if mol is None: mol = self.mol
-        return init_guess_by_minao(mol)
+        if charges is not None:
+            assert len(charges) == mol.natm
+            assert abs(sum(charges) - mol.charge ) < 1e-4
+            assert (numpy.abs(charges) < 1).all()
+        return init_guess_by_minao(mol, charges=charges)
 
     @lib.with_doc(init_guess_by_atom.__doc__)
     def init_guess_by_atom(self, mol=None):
@@ -1650,7 +1681,11 @@ class SCF(lib.StreamObject):
                             self.chkfile)
                 dm = self.init_guess_by_minao(mol)
         else:
-            dm = self.init_guess_by_minao(mol)
+            if key == 'minao':
+                dm = self.init_guess_by_minao(mol)
+            else:
+                charges = numpy.array(key.split(), dtype=float)
+                dm = self.init_guess_by_minao(mol, charges)
         if self.verbose >= logger.DEBUG1:
             s = self.get_ovlp()
             if isinstance(dm, numpy.ndarray) and dm.ndim == 2:

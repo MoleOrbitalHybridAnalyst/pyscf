@@ -192,12 +192,22 @@ class AtomHF1e(rohf.HF1e, AtomSphAverageRHF):
     eig = AtomSphAverageRHF.eig
 
 
-def frac_occ(symb, l, atomic_configuration=elements.NRSRHF_CONFIGURATION):
+def lmax(symb, atomic_configuration=elements.NRSRHF_CONFIGURATION):
+    nuc = gto.charge(symb)
+    for l in range(4):
+        if atomic_configuration[nuc][l] > 0:
+            lmax = l
+    return lmax
+
+def frac_occ(symb, l, atomic_configuration=elements.NRSRHF_CONFIGURATION, modcharge=None):
     nuc = gto.charge(symb)
     if l < 4 and atomic_configuration[nuc][l] > 0:
-        ne = atomic_configuration[nuc][l]
+        if modcharge is None:
+            ne = atomic_configuration[nuc][l]
+        else:
+            ne = atomic_configuration[nuc][l] - modcharge
         nd = (l * 2 + 1) * 2
-        ndocc = ne.__floordiv__(nd)
+        ndocc = int(ne.__floordiv__(nd))
         frac = (float(ne) / nd - ndocc) * 2
     else:
         ndocc = frac = 0
