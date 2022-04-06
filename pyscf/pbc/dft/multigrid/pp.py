@@ -319,7 +319,14 @@ def vpploc_part1_nuc_grad(mydf, dm, kpts=numpy.zeros((1,3)), atm_id=None, precis
         rhoG = _eval_rhoG(mydf, dm, hermi=1, kpts=kpts, deriv=0)
     else:
         rhoG = mydf.rhoG
+
     ngrids = numpy.prod(mesh)
+    if mydf.sccs:
+        weight = cell.vol / ngrids
+        rho_pol = lib.multiply(weight, mydf.sccs.rho_pol)
+        rho_pol_gs = tools.fft(rho_pol, mesh).reshape(-1,ngrids)
+        rhoG[:,0] += rho_pol_gs
+
     coulG = tools.get_coulG(cell, mesh=mesh)
     #vG = numpy.einsum('ng,g->ng', rhoG[:,0], coulG).reshape(-1,ngrids)
     vG = numpy.empty_like(rhoG[:,0], dtype=numpy.result_type(rhoG[:,0], coulG))
