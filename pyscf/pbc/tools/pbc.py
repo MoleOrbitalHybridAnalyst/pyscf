@@ -25,7 +25,7 @@ from pyscf.pbc.lib.kpts_helper import get_kconserv, get_kconserv3  # noqa
 from pyscf import __config__
 
 libpbc = lib.load_library('libpbc')
-FFT_ENGINE = getattr(__config__, 'pbc_tools_pbc_fft_engine', 'BLAS')
+FFT_ENGINE = getattr(__config__, 'pbc_tools_pbc_fft_engine', 'FFTW')
 
 def _fftn_blas(f, mesh):
     Gx = np.fft.fftfreq(mesh[0])
@@ -62,6 +62,35 @@ def _ifftn_blas(g, mesh):
     return out.reshape(-1, *mesh)
 
 if FFT_ENGINE == 'FFTW':
+    try:
+        libfft = lib.load_library('libfft')
+    except OSError:
+        raise RuntimeError("Failed to load libfft")
+
+    def _complex_fftn_fftw(f, mesh, func):
+        if f.dtype == np.double and f.flags.c_contiguous:
+            f = lib.copy(f, dtype=np.complex128)
+        else:
+            f = np.asarray(f, order='C', dtype=np.complex128)
+        mesh = np.asarray(mesh, order='C', dtype=np.int32)
+        rank = len(mesh)
+        out = np.empty_like(f)
+        fn = getattr(libfft, func)
+        for i, fi in enumerate(f):
+            fn(fi.ctypes.data_as(ctypes.c_void_p),
+               out[i].ctypes.data_as(ctypes.c_void_p),
+               mesh.ctypes.data_as(ctypes.c_void_p),
+               ctypes.c_int(rank))
+        return out
+
+    def _fftn_wrapper(a):
+        mesh = a.shape[1:]
+        return _complex_fftn_fftw(a, mesh, 'fft')
+    def _ifftn_wrapper(a):
+        mesh = a.shape[1:]
+        return _complex_fftn_fftw(a, mesh, 'ifft')
+
+elif FFT_ENGINE == 'PYFFTW':
     # pyfftw is slower than np.fft in most cases
     try:
         import pyfftw
@@ -737,10 +766,30 @@ def gradient_by_fft(f, Gv, mesh):
     assert ng == np.prod(mesh)
     f_gs = fft(f.reshape(-1,ng), mesh)
     f1_gs = gradient_gs(f_gs, Gv)
-    f1 = (ifft(f1_gs.reshape(-1,ng), mesh).real).reshape(-1,dim,ng)
+    f1_rs = ifft(f1_gs.reshape(-1,ng), mesh)
+    f1_rs = lib.copy(f1_rs, dtype=float)
+    f1 = f1_rs.reshape(-1,dim,ng)
     if f.ndim == 1:
         f1 = f1[0]
     return f1
+
+def gradient_by_fdiff(cell, f, mesh=None):
+    assert f.dtype == float
+    if mesh is None:
+        mesh = cell.mesh
+    mesh = np.asarray(mesh, order='C', dtype=np.int32)
+    a = cell.lattice_vectors()
+    # cube
+    dr = [a[i,i] / mesh[i] for i in range(3)]
+    dr = np.asarray(dr, order='C', dtype=float)
+    f = np.asarray(f, order='C')
+    df = np.empty([3,*mesh], order='C', dtype=float)
+    fun = getattr(libpbc, 'rs_gradient_cd3')
+    fun(f.ctypes.data_as(ctypes.c_void_p),
+        df.ctypes.data_as(ctypes.c_void_p),
+        mesh.ctypes.data_as(ctypes.c_void_p),
+        dr.ctypes.data_as(ctypes.c_void_p))
+    return df.reshape(3,-1)
 
 def laplacian_gs(f_gs, Gv):
     '''
@@ -764,13 +813,16 @@ def laplacian_by_fft(f, Gv, mesh):
     assert ng == np.prod(mesh)
     f_gs = fft(f.reshape(-1,ng), mesh)
     f2_gs = laplacian_gs(f_gs, Gv)
-    f2 = (ifft(f2_gs.reshape(-1,ng), mesh).real).reshape(-1,ng)
+    f2_rs = ifft(f2_gs.reshape(-1,ng), mesh)
+    f2_rs = lib.copy(f2_rs, dtype=float)
+    f2 = f2_rs.reshape(-1,ng)
     if f.ndim == 1:
         f2 = f2[0]
     return f2
 
 def solve_poisson(cell, rho, coulG=None, Gv=None, mesh=None,
-                  compute_potential=True, compute_gradient=False):
+                  compute_potential=True, compute_gradient=False,
+                  real_potential=True):
     if mesh is None:
         mesh = cell.mesh
     if coulG is None:
@@ -783,7 +835,9 @@ def solve_poisson(cell, rho, coulG=None, Gv=None, mesh=None,
         phiG = np.empty_like(rhoG)
         for i in range(len(phiG)):
             phiG[i] = lib.multiply(rhoG[i], coulG)
-        phiR = ifft(phiG, mesh).real
+        phiR = ifft(phiG, mesh)
+        if real_potential:
+            phiR = lib.copy(phiR, dtype=float)
 
     dphiR = None
     if compute_gradient:
@@ -795,11 +849,13 @@ def solve_poisson(cell, rho, coulG=None, Gv=None, mesh=None,
             raise NotImplementedError
 
         drhoG = gradient_gs(rhoG, Gv).reshape(-1,dim,ng)
-        dphiR = np.empty_like(drhoG, dtype=float)
+        dphiR = np.empty_like(drhoG, dtype=np.complex128)
         for i in range(len(dphiR)):
             for x in range(dim):
                 dphiG = lib.multiply(drhoG[i,x], coulG)
-                dphiR[i,x] = ifft(dphiG, mesh).real
+                dphiR[i,x] = ifft(dphiG, mesh)
+        if real_potential:
+            dphiR = lib.copy(dphiR, dtype=float)
 
     if rho.ndim == 1:
         if compute_potential:
