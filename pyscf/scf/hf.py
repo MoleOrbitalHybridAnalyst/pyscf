@@ -496,9 +496,6 @@ def init_guess_by_minao(mol, charges=None):
                 new_atom.append(mol._atom[ia])
     occ = numpy.hstack(occ)
 
-    #@@@@@@@@@@
-    print(occ)
-    #@@@@@@@@@@
     pmol = gto.Mole()
     pmol._atm, pmol._bas, pmol._env = pmol.make_env(new_atom, basis, [])
     pmol._built = True
