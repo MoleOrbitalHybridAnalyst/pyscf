@@ -39,7 +39,7 @@ def solve(h1e, eri, ECI, ci, dHc, norb, nelec,
     if dci0 is None:
         dci0 = np.zeros(Na*Nb)
     sol, stat = sla.gmres(M, dHc.flatten(), x0=dci0,
-            tol=tol, atol=tol*np.linalg.norm(dHC), maxiter=max_cycle)
+            tol=tol, atol=tol*np.linalg.norm(dHc), maxiter=max_cycle)
     # stat == 0 means converged
 
     return sol.reshape((Na,Nb)), stat
