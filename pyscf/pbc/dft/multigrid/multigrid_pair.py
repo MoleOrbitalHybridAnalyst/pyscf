@@ -224,7 +224,7 @@ def build_task_list(cell, gridlevel_info, cell1=None, Ls=None, hermi=0, precisio
     Returns: :class:`ctypes.POINTER`
         The C pointer of the :class:`TaskList` structure.
     '''
-    from pyscf.pbc.gto.cell import build_neighbor_list_for_shlpairs, free_neighbor_list
+    from pyscf.pbc.gto import build_neighbor_list_for_shlpairs, free_neighbor_list
     if cell1 is None:
         cell1 = cell
     if Ls is None:
@@ -977,7 +977,7 @@ def nr_rks(mydf, xc_code, dm_kpts, hermi=1, kpts=None,
     if mydf.sccs:
         assert nset == 1
         rho_core = make_rho_core(cell)
-        e_pol, phi_sccs = mydf.sccs.kernel(rhoR, rho_core)
+        e_pol, phi_sccs = mydf.sccs.kernel(rhoR[0][0], rho_core)
         ecoul[0] += e_pol
         rho_core = None
         phi_sccs = lib.multiply(weight, phi_sccs, out=phi_sccs)

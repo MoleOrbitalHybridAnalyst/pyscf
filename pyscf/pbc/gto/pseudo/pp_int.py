@@ -33,8 +33,17 @@ from pyscf import gto
 from pyscf.pbc.lib.kpts_helper import gamma_point
 
 EPS_PPL = getattr(__config__, "pbc_gto_pseudo_eps_ppl", 1e-2)
+HL_TABLE_SLOTS = 7
+ATOM_OF        = 0
+ANG_OF         = 1
+HL_DIM_OF      = 2
+HL_DATA_OF     = 3
+HL_OFFSET0     = 4
+HF_OFFSET1     = 5
+HF_OFFSET2     = 6
 
 libpbc = lib.load_library('libpbc')
+
 
 def get_pp_loc_part1(cell, kpts=None):
     '''PRB, 58, 3641 Eq (1), integrals associated to erf
@@ -386,15 +395,6 @@ def get_pp_loc_part2_gamma_smallmem(cell, intors, kptij_lst, aosym='s2', comp=1)
     return buf
 
 
-HL_TABLE_SLOTS = 7
-ATOM_OF        = 0
-ANG_OF         = 1
-HL_DIM_OF      = 2
-HL_DATA_OF     = 3
-HL_OFFSET0     = 4
-HF_OFFSET1     = 5
-HF_OFFSET2     = 6
-
 def _prepare_hl_data(fakecell, hl_blocks):
     offset = [0] * 3
     hl_table = numpy.empty((len(hl_blocks),HL_TABLE_SLOTS), order='C', dtype=numpy.int32)
@@ -415,8 +415,9 @@ def _prepare_hl_data(fakecell, hl_blocks):
     return hl_table, hl_data
 
 
-def _contract_ppnl_gamma(cell, fakecell, hl_blocks, ppnl_half, kpts=None):
-    # XXX only works for Gamma point
+def _contract_ppnl(cell, fakecell, hl_blocks, ppnl_half, comp=1, kpts=None):
+    # TODO add k-point sampling
+    from pyscf.pbc.gto import NeighborListOpt
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
     else:
@@ -424,36 +425,57 @@ def _contract_ppnl_gamma(cell, fakecell, hl_blocks, ppnl_half, kpts=None):
 
     hl_table, hl_data = _prepare_hl_data(fakecell, hl_blocks)
 
+    opt = NeighborListOpt(fakecell)
+    opt.build(fakecell, cell)
+
+    shls_slice = (0, cell.nbas, 0, cell.nbas)
+    key = 'cart' if cell.cart else 'sph'
+    ao_loc = gto.moleintor.make_loc(cell._bas, key)
+
     ppnl = []
     nao = cell.nao_nr()
+    nao_pair = nao * (nao+1) // 2
     for k, kpt in enumerate(kpts_lst):
-        ptr_ppnl_half0 = lib.c_null_ptr()
-        ptr_ppnl_half1 = lib.c_null_ptr()
-        ptr_ppnl_half2 = lib.c_null_ptr()
+        ppnl_half0 = ppnl_half1 = ppnl_half2 = None
         if len(ppnl_half[0]) > 0:
-            ppnl_half0 = ppnl_half[0][k].real
-            ppnl_half0 = numpy.asarray(ppnl_half0, order='C', dtype=numpy.double)
-            ptr_ppnl_half0 = ppnl_half0.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half0 = ppnl_half[0][k]
         if len(ppnl_half[1]) > 0:
-            ppnl_half1 = ppnl_half[1][k].real
-            ppnl_half1 = numpy.asarray(ppnl_half1, order='C', dtype=numpy.double)
-            ptr_ppnl_half1 = ppnl_half1.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half1 = ppnl_half[1][k]
         if len(ppnl_half[2]) > 0:
-            ppnl_half2 = ppnl_half[2][k].real
-            ppnl_half2 = numpy.asarray(ppnl_half2, order='C', dtype=numpy.double)
-            ptr_ppnl_half2 = ppnl_half2.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half2 = ppnl_half[2][k]
 
-        ppnl_k = numpy.empty((nao,nao), order='C', dtype=numpy.double)
-        fn = getattr(libpbc, "contract_ppnl", None)
+        if gamma_point(kpt):
+            if ppnl_half0 is not None:
+                ppnl_half0 = ppnl_half0.real
+            if ppnl_half1 is not None:
+                ppnl_half1 = ppnl_half1.real
+            if ppnl_half2 is not None:
+                ppnl_half2 = ppnl_half2.real
+            buf = numpy.empty([nao_pair], order='C', dtype=numpy.double)
+            fill = getattr(libpbc, 'ppnl_fill_gs2')
+        else:
+            buf = numpy.empty([nao_pair], order='C', dtype=numpy.complex128)
+            raise NotImplementedError
+
+        ppnl_half0 = numpy.asarray(ppnl_half0, order='C')
+        ppnl_half1 = numpy.asarray(ppnl_half1, order='C')
+        ppnl_half2 = numpy.asarray(ppnl_half2, order='C')
+
+        drv = getattr(libpbc, "contract_ppnl", None)
         try:
-            fn(ppnl_k.ctypes.data_as(ctypes.c_void_p),
-               ptr_ppnl_half0, ptr_ppnl_half1, ptr_ppnl_half2,
-               hl_table.ctypes.data_as(ctypes.c_void_p),
-               hl_data.ctypes.data_as(ctypes.c_void_p),
-               ctypes.c_int(len(hl_blocks)),
-               ctypes.c_int(nao))
+            drv(fill, buf.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half0.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half1.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half2.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(comp), (ctypes.c_int*4)(*shls_slice),
+                ao_loc.ctypes.data_as(ctypes.c_void_p),
+                hl_table.ctypes.data_as(ctypes.c_void_p),
+                hl_data.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(len(hl_blocks)), opt._this)
         except Exception as e:
-            raise RuntimeError("Failed to contract ppnl. %s" % e)
+            raise RuntimeError(f"Failed to compute non-local pseudo-potential.\n{e}")
+
+        ppnl_k = lib.unpack_tril(buf)
         ppnl.append(ppnl_k)
 
     if kpts is None or numpy.shape(kpts) == (3,):
@@ -482,7 +504,8 @@ def _contract_ppnl_ip1_gamma(cell, fakecell, hl_blocks, ppnl_half, ppnl_half_ip2
 
     ppnl_ip1 = []
     nao = cell.nao_nr()
-    naux = fakecell.nao_nr()
+    #naux = fakecell.nao_nr()
+    naux = numpy.zeros([3,], dtype=numpy.int32)
     for k, kpt in enumerate(kpts_lst):
         ptr_ppnl_half0 = lib.c_null_ptr()
         ptr_ppnl_half1 = lib.c_null_ptr()
@@ -506,16 +529,20 @@ def _contract_ppnl_ip1_gamma(cell, fakecell, hl_blocks, ppnl_half, ppnl_half_ip2
         if len(ppnl_half_ip2[0]) > 0:
             ppnl_half_ip2_0 = ppnl_half_ip2[0][k].real
             ppnl_half_ip2_0 = numpy.asarray(ppnl_half_ip2_0, order='C', dtype=numpy.double)
+            naux[0] = ppnl_half_ip2_0.shape[1]
             ptr_ppnl_half_ip2_0 = ppnl_half_ip2_0.ctypes.data_as(ctypes.c_void_p)
         if len(ppnl_half_ip2[1]) > 0:
             ppnl_half_ip2_1 = ppnl_half_ip2[1][k].real
             ppnl_half_ip2_1 = numpy.asarray(ppnl_half_ip2_1, order='C', dtype=numpy.double)
+            naux[1] = ppnl_half_ip2_1.shape[1]
             ptr_ppnl_half_ip2_1 = ppnl_half_ip2_1.ctypes.data_as(ctypes.c_void_p)
         if len(ppnl_half_ip2[2]) > 0:
             ppnl_half_ip2_2 = ppnl_half_ip2[2][k].real
             ppnl_half_ip2_2 = numpy.asarray(ppnl_half_ip2_2, order='C', dtype=numpy.double)
+            naux[2] = ppnl_half_ip2_2.shape[1]
             ptr_ppnl_half_ip2_2 = ppnl_half_ip2_2.ctypes.data_as(ctypes.c_void_p)
 
+        naux = numpy.asarray(naux, dtype=numpy.int32)
 
         ppnl_ip1_k = numpy.empty((comp,nao,nao), order='C', dtype=numpy.double)
         fn = getattr(libpbc, "contract_ppnl_ip1", None)
@@ -526,7 +553,7 @@ def _contract_ppnl_ip1_gamma(cell, fakecell, hl_blocks, ppnl_half, ppnl_half_ip2
                hl_table.ctypes.data_as(ctypes.c_void_p),
                hl_data.ctypes.data_as(ctypes.c_void_p),
                ctypes.c_int(len(hl_blocks)),
-               ctypes.c_int(nao), ctypes.c_int(naux),
+               ctypes.c_int(nao), naux.ctypes.data_as(ctypes.c_void_p),
                hl_id.ctypes.data_as(ctypes.c_void_p))
         except Exception as e:
             raise RuntimeError("Failed to contract ppnl_ip1. %s" % e)
@@ -537,9 +564,10 @@ def _contract_ppnl_ip1_gamma(cell, fakecell, hl_blocks, ppnl_half, ppnl_half_ip2
     return ppnl_ip1
 
 
-def _contract_vppnl_ipik_dm(cell, fakecell, dm, hl_blocks, ppnl_half, ppnl_half_ip2,
+def _contract_ppnl_nuc_grad(cell, fakecell, dms, hl_blocks, ppnl_half, ppnl_half_ip2,
                             comp=3, kpts=None, hl_table=None, hl_data=None):
-    # XXX only works for Gamma point
+    # TODO add k-point sampling
+    from pyscf.pbc.gto import NeighborListOpt
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
     else:
@@ -548,67 +576,101 @@ def _contract_vppnl_ipik_dm(cell, fakecell, dm, hl_blocks, ppnl_half, ppnl_half_
     if hl_table is None:
         hl_table, hl_data = _prepare_hl_data(fakecell, hl_blocks)
 
-    dm = numpy.asarray(dm, order="C", dtype=float)
-    grad = numpy.zeros((cell.natm,comp), order='C', dtype=float)
+    opt = NeighborListOpt(fakecell)
+    opt.build(fakecell, cell)
+
+    nkpts = len(kpts_lst)
+    nao = cell.nao
+    dms = dms.reshape(nkpts, nao, nao)
     shls_slice = (0, cell.nbas, 0, cell.nbas)
     bas = numpy.asarray(cell._bas, order='C', dtype=numpy.int32)
     key = 'cart' if cell.cart else 'sph'
     ao_loc = gto.moleintor.make_loc(bas, key)
 
-    nao = cell.nao_nr()
-    naux = fakecell.nao_nr()
+    grad = []
     for k, kpt in enumerate(kpts_lst):
-        ptr_ppnl_half0 = lib.c_null_ptr()
-        ptr_ppnl_half1 = lib.c_null_ptr()
-        ptr_ppnl_half2 = lib.c_null_ptr()
+        dm = dms[k]
+        naux = [0] * 3
+        ppnl_half0 = ppnl_half1 = ppnl_half2 = None
         if len(ppnl_half[0]) > 0:
-            ppnl_half0 = ppnl_half[0][k].real
-            ppnl_half0 = numpy.asarray(ppnl_half0, order='C', dtype=float)
-            ptr_ppnl_half0 = ppnl_half0.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half0 = ppnl_half[0][k]
+            naux[0] = ppnl_half0.shape[0]
         if len(ppnl_half[1]) > 0:
-            ppnl_half1 = ppnl_half[1][k].real
-            ppnl_half1 = numpy.asarray(ppnl_half1, order='C', dtype=float)
-            ptr_ppnl_half1 = ppnl_half1.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half1 = ppnl_half[1][k]
+            naux[1] = ppnl_half1.shape[0]
         if len(ppnl_half[2]) > 0:
-            ppnl_half2 = ppnl_half[2][k].real
-            ppnl_half2 = numpy.asarray(ppnl_half2, order='C', dtype=float)
-            ptr_ppnl_half2 = ppnl_half2.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half2 = ppnl_half[2][k]
+            naux[2] = ppnl_half2.shape[0]
 
-        ptr_ppnl_half_ip2_0 = lib.c_null_ptr()
-        ptr_ppnl_half_ip2_1 = lib.c_null_ptr()
-        ptr_ppnl_half_ip2_2 = lib.c_null_ptr()
+        ppnl_half_ip2_0 = ppnl_half_ip2_1 = ppnl_half_ip2_2 = None
         if len(ppnl_half_ip2[0]) > 0:
-            ppnl_half_ip2_0 = ppnl_half_ip2[0][k].real
-            ppnl_half_ip2_0 = numpy.asarray(ppnl_half_ip2_0, order='C', dtype=float)
-            ptr_ppnl_half_ip2_0 = ppnl_half_ip2_0.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half_ip2_0 = ppnl_half_ip2[0][k]
+            assert naux[0] == ppnl_half_ip2_0.shape[1]
         if len(ppnl_half_ip2[1]) > 0:
-            ppnl_half_ip2_1 = ppnl_half_ip2[1][k].real
-            ppnl_half_ip2_1 = numpy.asarray(ppnl_half_ip2_1, order='C', dtype=float)
-            ptr_ppnl_half_ip2_1 = ppnl_half_ip2_1.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half_ip2_1 = ppnl_half_ip2[1][k]
+            assert naux[1] == ppnl_half_ip2_1.shape[1]
         if len(ppnl_half_ip2[2]) > 0:
-            ppnl_half_ip2_2 = ppnl_half_ip2[2][k].real
-            ppnl_half_ip2_2 = numpy.asarray(ppnl_half_ip2_2, order='C', dtype=float)
-            ptr_ppnl_half_ip2_2 = ppnl_half_ip2_2.ctypes.data_as(ctypes.c_void_p)
+            ppnl_half_ip2_2 = ppnl_half_ip2[2][k]
+            assert naux[2] == ppnl_half_ip2_2.shape[1]
 
-        fill = getattr(libpbc, 'vppnl_ip1_fill_gs1')
+        naux = numpy.asarray(naux, dtype=numpy.int32)
+
+        if gamma_point(kpt):
+            dm = dm.real
+            if ppnl_half0 is not None:
+                ppnl_half0 = ppnl_half0.real
+                ppnl_half_ip2_0 = ppnl_half_ip2_0.real
+            if ppnl_half1 is not None:
+                ppnl_half1 = ppnl_half1.real
+                ppnl_half_ip2_1 = ppnl_half_ip2_1.real
+            if ppnl_half2 is not None:
+                ppnl_half2 = ppnl_half2.real
+                ppnl_half_ip2_2 = ppnl_half_ip2_2.real
+            grad_k = numpy.zeros([cell.natm, comp], order='C', dtype=numpy.double)
+            fill = getattr(libpbc, 'ppnl_nuc_grad_fill_gs1')
+        else:
+            grad_k = numpy.empty([cell.natm, comp], order='C', dtype=numpy.complex128)
+            raise NotImplementedError
+
+        dm = numpy.asarray(dm, order='C')
+        ppnl_half0 = numpy.asarray(ppnl_half0, order='C')
+        ppnl_half1 = numpy.asarray(ppnl_half1, order='C')
+        ppnl_half2 = numpy.asarray(ppnl_half2, order='C')
+        ppnl_half_ip2_0 = numpy.asarray(ppnl_half_ip2_0, order='C')
+        ppnl_half_ip2_1 = numpy.asarray(ppnl_half_ip2_1, order='C')
+        ppnl_half_ip2_2 = numpy.asarray(ppnl_half_ip2_2, order='C')
+
         drv = getattr(libpbc, "contract_ppnl_nuc_grad", None)
         try:
             drv(fill,
-                grad.ctypes.data_as(ctypes.c_void_p),
+                grad_k.ctypes.data_as(ctypes.c_void_p),
                 dm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(comp),
-                ptr_ppnl_half0, ptr_ppnl_half1, ptr_ppnl_half2,
-                ptr_ppnl_half_ip2_0, ptr_ppnl_half_ip2_1, ptr_ppnl_half_ip2_2,
+                ppnl_half0.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half1.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half2.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half_ip2_0.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half_ip2_1.ctypes.data_as(ctypes.c_void_p),
+                ppnl_half_ip2_2.ctypes.data_as(ctypes.c_void_p),
                 hl_table.ctypes.data_as(ctypes.c_void_p),
                 hl_data.ctypes.data_as(ctypes.c_void_p),
                 ctypes.c_int(len(hl_blocks)),
-                ctypes.c_int(nao), ctypes.c_int(naux),
+                naux.ctypes.data_as(ctypes.c_void_p),
                 (ctypes.c_int*4)(*shls_slice),
                 ao_loc.ctypes.data_as(ctypes.c_void_p),
                 bas.ctypes.data_as(ctypes.c_void_p),
-                ctypes.c_int(cell.natm))
+                ctypes.c_int(cell.natm), opt._this)
         except Exception as e:
-            raise RuntimeError("Failed to compute contract_vppnl_nuc_grad. %s" % e)
-    return grad
+            raise RuntimeError(f"Failed to compute non-local pp nuclear gradient.\n{e}")
+        grad.append(grad_k)
+
+    grad_tot = 0
+    if nkpts == 1:
+        grad_tot = grad[0]
+    else:
+        for k in range(nkpts):
+            grad_tot += grad[k]
+        grad_tot = grad_tot.real
+    return grad_tot
 
 
 def get_pp_nl(cell, kpts=None):
@@ -623,7 +685,7 @@ def get_pp_nl(cell, kpts=None):
     nao = cell.nao_nr()
 
     if gamma_point(kpts_lst):
-        return _contract_ppnl_gamma(cell, fakecell, hl_blocks, ppnl_half, kpts)
+        return _contract_ppnl(cell, fakecell, hl_blocks, ppnl_half, kpts=kpts)
 
     buf = numpy.empty((3*9*nao), dtype=numpy.complex128)
 
@@ -762,14 +824,10 @@ def vppnl_nuc_grad(cell, dm, kpts=None):
     Nuclear gradients of the non-local part of the GTH pseudo potential,
     contracted with the density matrix.
     '''
-    if kpts is not None and not gamma_point(kpts):
-        raise NotImplementedError("k-point sampling not available")
-
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
     else:
         kpts_lst = numpy.reshape(kpts, (-1,3))
-    #nkpts = len(kpts_lst)
 
     fakecell, hl_blocks = fake_cell_vnl(cell)
     intors = ('int1e_ipovlp', 'int1e_r2_origi_ip2', 'int1e_r4_origi_ip2')
@@ -780,7 +838,7 @@ def vppnl_nuc_grad(cell, dm, kpts=None):
         for k, kpt in enumerate(kpts_lst):
             ppnl_half_ip2[0][k] *= -1
 
-    grad = _contract_vppnl_ipik_dm(cell, fakecell, dm, hl_blocks,
+    grad = _contract_ppnl_nuc_grad(cell, fakecell, dm, hl_blocks,
                                    ppnl_half, ppnl_half_ip2, kpts=kpts)
     grad *= -2
     return grad
@@ -967,6 +1025,7 @@ def _int_vnl(cell, fakecell, hl_blocks, kpts, intors=None, comp=1):
     nkpts = len(kpts)
 
     fill = getattr(libpbc, 'PBCnr2c_fill_ks1')
+    # TODO add screening
     intopt = lib.c_null_ptr()
 
     def int_ket(_bas, intor):
