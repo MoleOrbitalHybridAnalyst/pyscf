@@ -1521,7 +1521,7 @@ class SCF(lib.StreamObject):
         keys = set(('conv_tol', 'conv_tol_grad', 'max_cycle', 'init_guess',
                     'DIIS', 'diis', 'diis_space', 'diis_start_cycle',
                     'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
-                    'direct_scf', 'direct_scf_tol', 'conv_check'))
+                    'direct_scf', 'direct_scf_tol', 'conv_check', 'fock'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
         # @@@@@@@

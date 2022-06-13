@@ -109,7 +109,7 @@ def fill_2c2e(mol, auxmol_or_auxbasis, intor='int2c2e', comp=None, hermi=1, out=
 # array
 def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
                  int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
-                 max_memory=MAX_MEMORY, verbose=0, fauxe2=aux_e2):
+                 max_memory=MAX_MEMORY, verbose=0, fauxe2=aux_e2, return_low=False):
     '''
     Returns:
         2D array of (naux,nao*(nao+1)/2) in C-contiguous
@@ -191,7 +191,10 @@ def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
         dat = ints = None
 
     log.timer('cholesky_eri', *t0)
-    return cderi
+    if return_low:
+        return cderi, low
+    else:
+        return cderi
 
 # Debug version of cholesky_eri. Note the temporary memory usage is about
 # twice as large as the return cderi array

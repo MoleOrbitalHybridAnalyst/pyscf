@@ -94,6 +94,7 @@ class DF(lib.StreamObject):
         self._cderi = None
         self._vjopt = None
         self._rsh_df = {}  # Range separated Coulomb DF objects
+        self._low = None
         self._keys = set(self.__dict__.keys())
 
     @property
@@ -140,9 +141,9 @@ class DF(lib.StreamObject):
         int2c = mol._add_suffix('int2c2e')
         if (nao_pair*naux*8/1e6 < .9*max_memory and
             not isinstance(self._cderi_to_save, str)):
-            self._cderi = incore.cholesky_eri(mol, int3c=int3c, int2c=int2c,
-                                              auxmol=auxmol,
-                                              max_memory=max_memory, verbose=log)
+            self._cderi, self._low = incore.cholesky_eri(mol, int3c=int3c, int2c=int2c,
+                                              auxmol=auxmol, max_memory=max_memory, 
+                                              return_low=True, verbose=log)
         else:
             if isinstance(self._cderi_to_save, str):
                 cderi = self._cderi_to_save

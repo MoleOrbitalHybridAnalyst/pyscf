@@ -99,3 +99,6 @@ if __name__ == "__main__":
     H2ndc = Hc(h1-dh1/2, h2-dh2/2, num_dc) - E2*num_dc
     ndHc1 = -Hc(dh1, dh2, c1) + (E1-E2)*c1
     assert np.linalg.norm(H2ndc-ndHc1) < 1e-7
+
+    # check FCI energy only needs H response
+    assert abs(E1 - E2 - c.flatten() @ Hc(dh1, dh2, c).flatten()) < 1e-7
