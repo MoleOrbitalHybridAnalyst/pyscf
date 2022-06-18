@@ -429,7 +429,7 @@ class Atoms:
         import copy
 
         self.efv_scan = efv_scan
-        self.init_dict = None
+        self.init_dict = {'dm0': None}
 
         self.positions = None
         self.box = None
