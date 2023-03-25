@@ -5,7 +5,7 @@ author: Chenghan Li
 
 from pyscf.scf.hf import RHF
 import numpy as np
-from scipy.linalg import sqrtm
+from scipy.linalg import sqrtm, eigh
 from scipy.optimize import root
 
 class CRHF(RHF):
@@ -23,20 +23,30 @@ class CRHF(RHF):
         self.original_veff = vhf
         return vhf + self.get_lambda(self.get_ovlp(), dm)
 
-    def get_lambda(self, s1e, dm):
+    def get_lambda(self, s1e, dm, return_L_per_bond = False):
         L = np.zeros_like(dm)
         dmS = dm @ s1e
         aoslices = self.mol.aoslice_by_atom()
-        for bond, l, constraint in zip(self.bondatmlst, self.lagrange_multiplier, self.bond_order_constraint):
+        Ls = list()
+        for bond, l in zip(self.bondatmlst, self.lagrange_multiplier):
+            L_per_bond = np.zeros_like(dm)
             a0, a1 = aoslices[bond[0], 2:]
             b0, b1 = aoslices[bond[1], 2:]
-            tmp = l * s1e[:,b0:b1] @ dmS[b0:b1,a0:a1] / 2
-            L[:,a0:a1] -= tmp 
-            L[a0:a1]   -= tmp.T
-            tmp = l * s1e[:,a0:a1] @ dmS[a0:a1,b0:b1] / 2
-            L[:,b0:b1] -= tmp
-            L[b0:b1]   -= tmp.T
-        return L
+            tmp = s1e[:,b0:b1] @ dmS[b0:b1,a0:a1] / 2
+            L_per_bond[:,a0:a1] -= tmp
+            L_per_bond[a0:a1]   -= tmp.T
+            tmp = s1e[:,a0:a1] @ dmS[a0:a1,b0:b1] / 2
+            L_per_bond[:,b0:b1] -= tmp
+            L_per_bond[b0:b1]   -= tmp.T
+            if return_L_per_bond:
+                Ls.append(L_per_bond)
+            else:
+                L += l * L_per_bond
+
+        if return_L_per_bond:
+            return Ls
+        else:
+            return L
 
     def bond_order(self, s1e, dm):
         bo = list()
@@ -63,16 +73,17 @@ class CRHF(RHF):
         return (L + L.T) / 2
 
     def kernel(self, **kwargs):
+
+        overlap = self.get_ovlp()
+        sqrt_overlap = sqrtm(overlap)
+        inverse_sqrt_overlap = np.linalg.inv(sqrt_overlap)
+        
         def root_finding_function(lagrange_multiplier_input):
             self.lagrange_multiplier = lagrange_multiplier_input
             super(RHF, self).kernel(**kwargs)
-            overlap = self.get_ovlp()
-            sqrt_overlap = sqrtm(overlap)
-            inverse_sqrt_overlap = np.linalg.inv(sqrt_overlap)
-
             dm = self.make_rdm1()
-
             eigenvectors = self.mo_coeff
+            eigenvectors_in_mo_basis = sqrt_overlap @ eigenvectors
             eigenvalues = self.mo_energy
             occupation = self.mo_occ
 
@@ -80,41 +91,29 @@ class CRHF(RHF):
 
             function_value = np.array(bond_order) - self.bond_order_constraint
 
-            dmS = dm @ overlap
-            aoslices = self.mol.aoslice_by_atom()
-            Ls = list()
-            for bond in self.bondatmlst:
-                L = np.zeros_like(dm)
-                a0, a1 = aoslices[bond[0], 2:]
-                b0, b1 = aoslices[bond[1], 2:]
-                tmp = overlap[:, b0:b1] @ dmS[b0:b1, a0:a1] / 2
-                L[:, a0:a1] -= tmp
-                L[a0:a1] -= tmp.T
-                tmp = overlap[:, a0:a1] @ dmS[a0:a1, b0:b1] / 2
-                L[:, b0:b1] -= tmp
-                L[b0:b1] -= tmp.T
-                Ls.append(L)
+            Ls = self.get_lambda(overlap, dm, return_L_per_bond=True)
 
             density_matrix_derivatives = list()
-            for L, bond, constraint in zip(Ls, bond_order, self.bond_order_constraint):
+            for L in Ls:
+
+                L_in_mo_basis = inverse_sqrt_overlap @ L @ inverse_sqrt_overlap
+
                 outer_difference = np.subtract.outer(eigenvalues, eigenvalues)
                 np.fill_diagonal(outer_difference, 1)
                 eigenvalues_outer_inverse_difference = 1.0 / outer_difference
                 np.fill_diagonal(eigenvalues_outer_inverse_difference, 0)
                 transform_matrix = \
-                    (bond - constraint) * (eigenvectors.T @ overlap @ eigenvectors) * eigenvalues_outer_inverse_difference
+                     (eigenvectors_in_mo_basis.T @ L_in_mo_basis.T @ eigenvectors_in_mo_basis) * eigenvalues_outer_inverse_difference
 
-                transform_matrix_in_ao_basis = inverse_sqrt_overlap @ transform_matrix @ sqrt_overlap
-
-                eigenvectors_derivative = np.transpose(transform_matrix_in_ao_basis @ eigenvectors.T)
+                eigenvectors_derivative_in_mo_basis = eigenvectors_in_mo_basis @ transform_matrix
+                eigenvectors_derivative = inverse_sqrt_overlap @ eigenvectors_derivative_in_mo_basis
 
                 occupied_eigenvectors = eigenvectors[:, occupation > 0]
                 occupied_eigenvectors_derivative = eigenvectors_derivative[:, occupation > 0]
                 density_matrix_derivative = \
                     np.dot(occupied_eigenvectors * occupation[occupation > 0],
-                           occupied_eigenvectors_derivative.conj().T) \
-                    + np.dot(occupied_eigenvectors_derivative * occupation[occupation > 0],
-                             occupied_eigenvectors.conj().T)
+                           occupied_eigenvectors_derivative.conj().T)
+                density_matrix_derivative += density_matrix_derivative.conj().T
 
                 density_matrix_derivatives.append(density_matrix_derivative)
 
@@ -122,18 +121,18 @@ class CRHF(RHF):
             for L in Ls:
                 jacobian = list()
                 for D in density_matrix_derivatives:
-                    jacobian.append(np.vdot(D,L))
+                    jacobian.append(np.vdot(D, L))
                 jacobians.append(np.array(jacobian))
 
-            print(jacobians)
+            return function_value, np.array(jacobians)
 
-            return function_value
+        result = root(root_finding_function, self.lagrange_multiplier, jac=True)
 
-        print(root(root_finding_function, self.lagrange_multiplier))
 
 if __name__ == "__main__":
     from pyscf import gto, scf
-    
+    import scipy
+
     mol = gto.Mole()
     mol.verbose = 0
     mol.atom = '''
@@ -148,13 +147,12 @@ if __name__ == "__main__":
     mf.kernel()
     dm0 = mf.make_rdm1()
 
-    bond_atom_list = [[0,1]]
-    required_bond_order = [-3e-1]
-    mf = CRHF(mol, bond_atom_list, required_bond_order)
-    mf.max_cycle = 100
-    mf.kernel(dm0=dm0)
-    
-    s1e = mf.get_ovlp()
 
-    assert(np.abs(np.max(np.array(mf.bond_order(s1e, mf.make_rdm1())) - np.array(required_bond_order))) < 1e-10)
+    bond_atom_list = [[1,2]]
+    required_bond_order = [3e-2]
+    mf = CRHF(mol, bond_atom_list, required_bond_order)
+    overlap = mf.get_ovlp()
+    mf.kernel()
+
+    assert(np.abs(np.max(np.array(mf.bond_order(overlap, mf.make_rdm1())) - np.array(required_bond_order))) < 1e-10)
 
