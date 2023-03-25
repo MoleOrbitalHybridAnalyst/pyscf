@@ -131,7 +131,6 @@ class CRHF(RHF):
 
 if __name__ == "__main__":
     from pyscf import gto, scf
-    import scipy
 
     mol = gto.Mole()
     mol.verbose = 0
