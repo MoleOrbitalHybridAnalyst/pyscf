@@ -691,7 +691,7 @@ def _non_uniform_Gv_base(n):
     #return np.hstack((0,rs,-rs[::-1])), np.hstack((0,ws,ws[::-1]))
     return np.hstack((rs,-rs[::-1])), np.hstack((ws,ws[::-1]))
 
-def get_SI(cell, Gv=None):
+def get_SI(cell, Gv=None, coords=None):
     '''Calculate the structure factor (0D, 1D, 2D, 3D) for all atoms; see MH (3.34).
 
     Args:
@@ -704,7 +704,8 @@ def get_SI(cell, Gv=None):
         SI : (natm, ngrids) ndarray, dtype=np.complex128
             The structure factor for each atom at each G-vector.
     '''
-    coords = cell.atom_coords()
+    if coords is None:
+        coords = cell.atom_coords()
     ngrids = np.prod(cell.mesh)
     if Gv is None or Gv.shape[0] == ngrids:
         basex, basey, basez = cell.get_Gv_weights(cell.mesh)[1]
