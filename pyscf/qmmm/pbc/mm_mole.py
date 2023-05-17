@@ -29,13 +29,14 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             rho(r) = charge * Norm * exp(-zeta * r^2)
 
     '''
-    def __init__(self, atoms, a, rcut=20, charges=None, zeta=None):
+    def __init__(self, atoms, a, rcut=20.0, grid_spacing=2.0, charges=None, zeta=None):
         pbc.gto.Cell.__init__(self)
         self.atom = self._atom = atoms
         self.unit = 'Bohr'
         self.charge_model = 'point'
         self.a = a
         self.rcut = rcut
+        self.mesh = np.ceil(np.diag(self.lattice_vectors()) / grid_spacing).astype(int)
 
         # Initialize ._atm and ._env to save the coordinates and charges and
         # other info of MM particles
@@ -90,7 +91,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             coords2 = coords1
 
         ew_eta, ew_cut = self.get_ewald_params()
-        mesh = _cut_mesh_for_ewald(self, self.mesh)
+        mesh = self.mesh
 
         b = self.reciprocal_vectors(norm_to=1)
         heights_inv = lib.norm(b, axis=1)

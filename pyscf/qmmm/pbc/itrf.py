@@ -504,7 +504,7 @@ def qmmm_grad_for_scf(scf_grad):
             qm_ewg_grad = np.zeros_like(qm_coords)
             mm_ewg_grad = np.zeros_like(mm_coords)
 
-            mesh = pyscf.pbc.gto.cell._cut_mesh_for_ewald(cell, cell.mesh)
+            mesh = cell.mesh
             Gv, Gvbase, weights = cell.get_Gv_weights(mesh)
             absG2 = lib.einsum('gi,gi->g', Gv, Gv)
             absG2[absG2==0] = 1e200
