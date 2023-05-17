@@ -332,6 +332,8 @@ def qmmm_grad_for_scf(scf_grad):
     class QMMM(_QMMMGrad, grad_class):
         def __init__(self, scf_grad):
             self.__dict__.update(scf_grad.__dict__)
+            self.de_ewald_mm = None
+            self._keys.update(['de_ewald_mm'])
 
         def dump_flags(self, verbose=None):
             grad_class.dump_flags(self, verbose)
@@ -458,7 +460,7 @@ def qmmm_grad_for_scf(scf_grad):
                 g_mm += q1 * lib.einsum('i,ix,i->ix', charges, r1-coords, 1/r**3)
             return g_mm
 
-        def grad_ewald_all(self, dm=None):
+        def grad_ewald(self, dm=None, with_mm=False):
             # pbc correction grad w.r.t. qm and mm atom positions
             if dm is None: dm = self.base.make_rdm1()
             qm_charges = self.base.get_qm_charges(dm)
@@ -467,8 +469,12 @@ def qmmm_grad_for_scf(scf_grad):
             mm_coords = self.base.mm_mol.atom_coords()
             cell = self.base.mm_mol
             assert cell.dimension == 3
-            ew_eta = cell.get_ewald_params()[0]
-            Lall = cell.get_lattice_Ls()
+            ew_eta, ew_cut = cell.get_ewald_params()
+            b = cell.reciprocal_vectors(norm_to=1)
+            heights_inv = lib.norm(b, axis=1)
+            rcut = cell.rcut
+            nimgs = np.ceil(rcut * heights_inv).astype(int)
+            Lall = cell.get_lattice_Ls(rcut=ew_cut, nimgs=nimgs)
 
             def loop(i):
                 for j in range(len(qm_coords)):
@@ -492,7 +498,7 @@ def qmmm_grad_for_scf(scf_grad):
                              np.sum(- qi * qj / r ** 2 * r1 * 2 * ew_eta / np.sqrt(np.pi) *
                                  np.exp(-ew_eta**2 * r ** 2).reshape(len(r),1), axis = 0)
                     qm_ewovrl_grad[i] += grad_i
-                    if is_mm:
+                    if is_mm and with_mm:
                         mm_ewovrl_grad[j] -= grad_i
 
             qm_ewg_grad = np.zeros_like(qm_coords)
@@ -513,11 +519,18 @@ def qmmm_grad_for_scf(scf_grad):
             for i, qi in enumerate(qm_charges):
                 Zfac = np.imag( (mm_ZSI+qm_ZSI) * qm_SI[i].conj()) * qi
                 qm_ewg_grad[i] = - np.sum(Zfac.reshape((len(Zfac),1)) * ZexpG2_mod, axis = 0)
-            for i, qi in enumerate(mm_charges):
-                Zfac = np.imag(qm_ZSI * mm_SI[i].conj()) * qi
-                mm_ewg_grad[i] = + np.sum(Zfac.reshape((len(Zfac),1)) * ZexpG2_mod, axis = 0)
+            if with_mm:
+                for i, qi in enumerate(mm_charges):
+                    Zfac = np.imag(qm_ZSI * mm_SI[i].conj()) * qi
+                    mm_ewg_grad[i] = - np.sum(Zfac.reshape((len(Zfac),1)) * ZexpG2_mod, axis = 0)
+                return qm_ewg_grad + qm_ewovrl_grad, mm_ewg_grad + mm_ewovrl_grad
+            else:
+                return qm_ewg_grad + qm_ewovrl_grad
 
-            return qm_ewg_grad + qm_ewovrl_grad, mm_ewg_grad + mm_ewovrl_grad
+        def _finalize(self):
+            g_ewald_qm, self.de_ewald_mm = self.grad_ewald(with_mm=True)
+            self.de += g_ewald_qm
+            grad_class._finalize(self)
     return QMMM(scf_grad)
 
 # A tag to label the derived class
