@@ -5,7 +5,10 @@ from pyscf import pbc
 from pyscf import qmmm
 from pyscf.gto.mole import is_au
 from pyscf.data.elements import charge
-from pyscf.lib import param
+from pyscf.lib import param, logger
+from pyscf.pbc.gto.cell import _cut_mesh_for_ewald
+from scipy.special import erf, erfc
+from pyscf import lib
 
 class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
     '''Cell class for MM particles.
@@ -81,11 +84,6 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         assert self.dimension == 3
         assert (coords2 is None and charges2 is None) or (coords2 is not None and charges2 is not None)
 
-        from pyscf.pbc.gto.cell import _cut_mesh_for_ewald
-        from scipy.special import erfc
-        from pyscf import lib
-        from pyscf.lib import logger
-
         if charges2 is not None:
             assert len(charges2) == len(coords2)
         else:
@@ -106,18 +104,19 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         r[r<1e-16] = 1e200
 #        ewovrl = .5 * np.einsum('i,j,Lij->', chargs, chargs, erfc(ew_eta * r) / r)
         if charges2 is not None:
-            ewovrl = lib.einsum('j,Lij->i', charges2, erfc(ew_eta * r) / r)
+            ewovrl = -lib.einsum('j,Lij->i', charges2, erf(ew_eta * r) / r)
         else:
-            ewovrl = .5 * np.sum(erfc(ew_eta * r) / r, axis=0)
+            ewovrl = -np.sum(erf(ew_eta * r) / r, axis=0)
 
         # last line of Eq. (F.5) in Martin
 #        ewself  = -.5 * np.dot(chargs,chargs) * 2 * ew_eta / np.sqrt(np.pi)
 #        if self.dimension == 3:
 #            ewself += -.5 * np.sum(chargs)**2 * np.pi/(ew_eta**2 * self.vol)
-        if charges2 is not None:
-            ewself = 0
-        else:
-            ewself = -.5 * np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
+
+#        if charges2 is not None:
+#            ewself = 0
+#        else:
+#            ewself = -.5 * np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
 
         # g-space sum (using g grid) (Eq. (F.6) in Martin, but note errors as below)
         # Eq. (F.6) in Martin is off by a factor of 2, the
@@ -145,9 +144,9 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewg = lib.einsum('ig,g,g->i', SI1.conj(), ZexpG2, coulG).real
         else:
             expG2 = lib.einsum("ig,g->ig", SI, np.exp(-absG2/(4*ew_eta**2)))
-            ewg = .5 * lib.einsum('ig,jg,g->ij', SI.conj(), expG2, coulG).real
+            ewg = lib.einsum('ig,jg,g->ij', SI.conj(), expG2, coulG).real
 
-        return -(ewovrl + ewself) + ewg
+        return ewovrl + ewg
 
 def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM
