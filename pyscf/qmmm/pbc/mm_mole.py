@@ -113,10 +113,11 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 #        if self.dimension == 3:
 #            ewself += -.5 * np.sum(chargs)**2 * np.pi/(ew_eta**2 * self.vol)
 
-#        if charges2 is not None:
-#            ewself = 0
-#        else:
+        if charges2 is not None:
+            ewself = 0
+        else:
 #            ewself = -.5 * np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
+            ewself = -np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
 
         # g-space sum (using g grid) (Eq. (F.6) in Martin, but note errors as below)
         # Eq. (F.6) in Martin is off by a factor of 2, the
@@ -146,7 +147,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             expG2 = lib.einsum("ig,g->ig", SI, np.exp(-absG2/(4*ew_eta**2)))
             ewg = lib.einsum('ig,jg,g->ij', SI.conj(), expG2, coulG).real
 
-        return ewovrl + ewg
+        return ewovrl + ewself + ewg
 
 def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM

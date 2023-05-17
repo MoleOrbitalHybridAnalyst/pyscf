@@ -205,16 +205,18 @@ def qmmm_for_scf(scf_method, mm_mol):
             veff = method_class.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
             if isinstance(veff, lib.NPArrayWithTag):
                 metadata = veff.__dict__
-                veff = lib.tag_array(veff + vdiff, **metadata)
+                veff = lib.tag_array(veff + vdiff, veff_rs=veff, **metadata)
             else:
-                veff += vdiff
+                veff = lib.tag_array(veff + vdiff, veff_rs=veff)
             return veff
 
         def energy_elec(self, dm=None, h1e=None, vhf=None):
             if vhf is None:
                 # use the original veff to compute energy
                 vhf = method_class.get_veff(self, self.mol, dm)
-            return method_class.energy_elec(self, dm=dm, h1e=h1e, vhf=vhf)
+                return method_class.energy_elec(self, dm=dm, h1e=h1e, vhf=vhf)
+            else:
+                return method_class.energy_elec(self, dm=dm, h1e=h1e, vhf=vhf.veff_rs)
 
         def energy_ewald(self, dm=None, mm_ewald_pot=None, qm_ewald_pot=None):
             # QM-QM and QM-MM pbc correction
