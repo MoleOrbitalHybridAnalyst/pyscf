@@ -65,12 +65,6 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         self._atm = _atm
         self._built = True
 
-    def get_zetas(self):
-        if self.charge_model == 'gaussian':
-            return self._env[self._atm[:,gto.PTR_ZETA]]
-        else:
-            return np.ones(self.natm) * 1e16
-
     def get_ewald_params(self, precision=None, rcut=None):
         if rcut is None:
             ew_cut = self.rcut
@@ -103,31 +97,17 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         r = np.sqrt(lib.einsum('Lijx,Lijx->Lij', rLij, rLij))
         rLij = None
         r[r<1e-16] = 1e200
-#        ewovrl = .5 * np.einsum('i,j,Lij->', chargs, chargs, erfc(ew_eta * r) / r)
         if charges2 is not None:
             ewovrl = -lib.einsum('j,Lij->i', charges2, erf(ew_eta * r) / r)
         else:
             ewovrl = -np.sum(erf(ew_eta * r) / r, axis=0)
 
-        # last line of Eq. (F.5) in Martin
-#        ewself  = -.5 * np.dot(chargs,chargs) * 2 * ew_eta / np.sqrt(np.pi)
-#        if self.dimension == 3:
-#            ewself += -.5 * np.sum(chargs)**2 * np.pi/(ew_eta**2 * self.vol)
-
         if charges2 is not None:
             ewself = 0
         else:
-#            ewself = -.5 * np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
             ewself = -np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
 
-        # g-space sum (using g grid) (Eq. (F.6) in Martin, but note errors as below)
-        # Eq. (F.6) in Martin is off by a factor of 2, the
-        # exponent is wrong (8->4) and the square is in the wrong place
-        #
-        # Formula should be
-        #   1/2 * 4\pi / Omega \sum_I \sum_{G\neq 0} |ZS_I(G)|^2 \exp[-|G|^2/4\eta^2]
-        # where
-        #   ZS_I(G) = \sum_a Z_a exp (i G.R_a)
+        # g-space sum (using g grid)
 
         Gv, Gvbase, weights = self.get_Gv_weights(mesh)
         absG2 = lib.einsum('gi,gi->g', Gv, Gv)
@@ -135,9 +115,6 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         coulG = 4*np.pi / absG2
         coulG *= weights
-#        ZSI = np.einsum("i,ij->j", chargs, self.get_SI(Gv))
-#        ZexpG2 = ZSI * np.exp(-absG2/(4*ew_eta**2))
-#        ewg = .5 * np.einsum('i,i,i', ZSI.conj(), ZexpG2, coulG).real
         SI = self.get_SI(Gv, coords2)
         if charges2 is not None:
             SI1 = self.get_SI(Gv, coords1)

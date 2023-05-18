@@ -9,6 +9,8 @@ from pyscf import scf
 from pyscf import grad
 from pyscf.lib import logger
 from pyscf.qmmm.pbc import mm_mole
+from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
+from pyscf import qmmm as qmmm_gas
 
 import scipy
 
@@ -83,15 +85,6 @@ def qmmm_for_scf(scf_method, mm_mol):
         method_class = scf_method._scf.__class__
 
     class QMMM(_QMMM, method_class):
-        def __init__(self, scf_method, mm_mol):
-            self.__dict__.update(scf_method.__dict__)
-            self.mm_mol = mm_mol
-            self.mm_ewald_pot = None
-            self.qm_ewald_hess = None
-            self._keys.update(['mm_mol'])
-            self._keys.update(['mm_ewald_pot'])
-            self._keys.update(['qm_ewald_hess'])
-
         def dump_flags(self, verbose=None):
             method_class.dump_flags(self, verbose)
             logger.info(self, '** Add background charges for %s **',
@@ -107,45 +100,6 @@ def qmmm_for_scf(scf_method, mm_mol):
                 for i, z in enumerate(charges):
                     logger.debug(self, '%.9g    %s', z, coords[i])
             return self
-
-        def get_hcore(self, mol=None):
-            if mol is None:
-                mol = self.mol
-            mm_mol = self.mm_mol
-
-            if getattr(method_class, 'get_hcore', None):
-                h1e = method_class.get_hcore(self, mol)
-            else:  # DO NOT modify post-HF objects to avoid the MM charges applied twice
-                raise RuntimeError('mm_charge function cannot be applied on post-HF methods')
-
-            coords = mm_mol.atom_coords()
-            charges = mm_mol.atom_charges()
-            nao = mol.nao
-            max_memory = self.max_memory - lib.current_memory()[0]
-            blksize = int(min(max_memory*1e6/8/nao**2, 200))
-            blksize = max(blksize, 1)
-            if mm_mol.charge_model == 'gaussian':
-                expnts = mm_mol.get_zetas()
-
-                if mol.cart:
-                    intor = 'int3c2e_cart'
-                else:
-                    intor = 'int3c2e_sph'
-                cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
-                                                     mol._env, intor)
-                v = 0
-                for i0, i1 in lib.prange(0, charges.size, blksize):
-                    fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-                    j3c = df.incore.aux_e2(mol, fakemol, intor=intor,
-                                           aosym='s2ij', cintopt=cintopt)
-                    v += lib.einsum('xk,k->x', j3c, -charges[i0:i1])
-                v = lib.unpack_tril(v)
-                h1e += v
-            else:
-                for i0, i1 in lib.prange(0, charges.size, blksize):
-                    j3c = mol.intor('int1e_grids', hermi=1, grids=coords[i0:i1])
-                    h1e += lib.einsum('kpq,k->pq', j3c, -charges[i0:i1])
-            return h1e
 
         def get_mm_ewald_pot(self, mol, mm_mol):
             return self.mm_mol.get_ewald_pot(
@@ -258,15 +212,34 @@ def qmmm_for_scf(scf_method, mm_mol):
         def nuc_grad_method(self):
             scf_grad = method_class.nuc_grad_method(self)
             return qmmm_grad_for_scf(scf_grad)
-        Gradients = nuc_grad_method
 
     if isinstance(scf_method, scf.hf.SCF):
-        return QMMM(scf_method, mm_mol)
+        qmmm = qmmm_gas.itrf.qmmm_for_scf(scf_method, mm_mol)
+        obj2return = qmmm
     else:
-        scf_method._scf = QMMM(scf_method._scf, mm_mol).run()
-        scf_method.mo_coeff = scf_method._scf.mo_coeff
-        scf_method.mo_energy = scf_method._scf.mo_energy
-        return scf_method
+        obj2return = qmmm_gas.itrf.qmmm_for_scf(scf_method._scf, mm_mol)
+        qmmm = obj2return._scf
+
+    qmmm.mm_mol = mm_mol
+    qmmm.mm_ewald_pot = None
+    qmmm.qm_ewald_hess = None
+    qmmm._keys.update(['mm_mol'])
+    qmmm._keys.update(['mm_ewald_pot'])
+    qmmm._keys.update(['qm_ewald_hess'])
+    qmmm.__class__.dump_flags = QMMM.dump_flags
+    qmmm.__class__.get_mm_ewald_pot = QMMM.get_mm_ewald_pot
+    qmmm.__class__.get_qm_ewald_pot = QMMM.get_qm_ewald_pot
+    qmmm.__class__.get_qm_charges = QMMM.get_qm_charges
+    qmmm.__class__.get_vdiff = QMMM.get_vdiff
+    qmmm.__class__.get_veff = QMMM.get_veff
+    qmmm.__class__.energy_elec = QMMM.energy_elec
+    qmmm.__class__.energy_ewald = QMMM.energy_ewald
+    qmmm.__class__.energy_nuc = QMMM.energy_nuc
+    qmmm.__class__.energy_tot = QMMM.energy_tot
+    qmmm.__class__.nuc_grad_method = QMMM.nuc_grad_method
+    qmmm.__class__.Gradients = QMMM.nuc_grad_method
+
+    return obj2return
 
 def add_mm_charges_grad(scf_grad, atoms_or_coords, a, charges, radii=None, unit=None):
     '''Apply the MM charges in the QM gradients' method.  It affects both the
@@ -320,11 +293,6 @@ def qmmm_grad_for_scf(scf_grad):
 
     grad_class = scf_grad.__class__
     class QMMM(_QMMMGrad, grad_class):
-        def __init__(self, scf_grad):
-            self.__dict__.update(scf_grad.__dict__)
-            self.de_ewald_mm = None
-            self._keys.update(['de_ewald_mm'])
-
         def dump_flags(self, verbose=None):
             grad_class.dump_flags(self, verbose)
             logger.info(self, '** Add background charges for %s **', grad_class)
@@ -339,116 +307,6 @@ def qmmm_grad_for_scf(scf_grad):
                 for i, z in enumerate(charges):
                     logger.debug1(self, '%.9g    %s', z, coords[i])
             return self
-
-        def get_hcore(self, mol=None):
-            ''' (QM 1e grad) + <-d/dX i|q_mm/r_mm|j>'''
-            if mol is None:
-                mol = self.mol
-            mm_mol = self.base.mm_mol
-            coords = mm_mol.atom_coords()
-            charges = mm_mol.atom_charges()
-
-            nao = mol.nao
-            max_memory = self.max_memory - lib.current_memory()[0]
-            blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
-            blksize = max(blksize, 1)
-            g_qm = grad_class.get_hcore(self, mol)
-            if mm_mol.charge_model == 'gaussian':
-                expnts = mm_mol.get_zetas()
-                if mol.cart:
-                    intor = 'int3c2e_ip1_cart'
-                else:
-                    intor = 'int3c2e_ip1_sph'
-                cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
-                                                     mol._env, intor)
-                v = 0
-                for i0, i1 in lib.prange(0, charges.size, blksize):
-                    fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-                    j3c = df.incore.aux_e2(mol, fakemol, intor, aosym='s1',
-                                           comp=3, cintopt=cintopt)
-                    v += lib.einsum('ipqk,k->ipq', j3c, charges[i0:i1])
-                g_qm += v
-            else:
-                for i0, i1 in lib.prange(0, charges.size, blksize):
-                    j3c = mol.intor('int1e_grids_ip', grids=coords[i0:i1])
-                    g_qm += lib.einsum('ikpq,k->ipq', j3c, charges[i0:i1])
-            return g_qm
-
-        def grad_hcore_mm(self, dm, mol=None):
-            r'''Nuclear gradients of the electronic energy
-            with respect to MM atoms:
-
-            ... math::
-                g = \sum_{ij} \frac{\partial hcore_{ij}}{\partial R_{I}} P_{ji},
-
-            where I represents MM atoms.
-
-            Args:
-                dm : array
-                    The QM density matrix.
-            '''
-            if mol is None:
-                mol = self.mol
-            mm_mol = self.base.mm_mol
-
-            coords = mm_mol.atom_coords()
-            charges = mm_mol.atom_charges()
-            expnts = mm_mol.get_zetas()
-
-            intor = 'int3c2e_ip2'
-            nao = mol.nao
-            max_memory = self.max_memory - lib.current_memory()[0]
-            blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
-            blksize = max(blksize, 1)
-            cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
-                                                 mol._env, intor)
-
-            g = np.empty_like(coords)
-            for i0, i1 in lib.prange(0, charges.size, blksize):
-                fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-                j3c = df.incore.aux_e2(mol, fakemol, intor, aosym='s1',
-                                       comp=3, cintopt=cintopt)
-                g[i0:i1] = lib.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm).T
-            return g
-
-        contract_hcore_mm = grad_hcore_mm # for backward compatibility
-
-        def grad_nuc(self, mol=None, atmlst=None, dm=None):
-            if mol is None: mol = self.mol
-            coords = self.base.mm_mol.atom_coords()
-            charges = self.base.mm_mol.atom_charges()
-
-            # gas phase nuc interactions
-            g_qm = grad_class.grad_nuc(self, mol, atmlst)
-# nuclei lattice interaction
-            g_mm = np.empty((mol.natm,3))
-            for i in range(mol.natm):
-                q1 = mol.atom_charge(i)
-                r1 = mol.atom_coord(i)
-                r = lib.norm(r1-coords, axis=1)
-                g_mm[i] = -q1 * lib.einsum('i,ix,i->x', charges, r1-coords, 1/r**3)
-            if atmlst is not None:
-                g_mm = g_mm[atmlst]
-
-            return g_qm + g_mm
-
-        def grad_nuc_mm(self, mol=None):
-            '''Nuclear gradients of the gas-phase QM-MM nuclear energy
-            (in the form of point charge Coulomb interactions)
-            with respect to MM atoms.
-            '''
-            if mol is None:
-                mol = self.mol
-            mm_mol = self.base.mm_mol
-            coords = mm_mol.atom_coords()
-            charges = mm_mol.atom_charges()
-            g_mm = np.zeros_like(coords)
-            for i in range(mol.natm):
-                q1 = mol.atom_charge(i)
-                r1 = mol.atom_coord(i)
-                r = lib.norm(r1-coords, axis=1)
-                g_mm += q1 * lib.einsum('i,ix,i->ix', charges, r1-coords, 1/r**3)
-            return g_mm
 
         def grad_ewald(self, dm=None, with_mm=False, mm_ewald_pot=None, qm_ewald_pot=None):
             # pbc correction grad w.r.t. qm and mm atom positions
@@ -549,10 +407,11 @@ def qmmm_grad_for_scf(scf_grad):
             g_ewald_qm, self.de_ewald_mm = self.grad_ewald(with_mm=True)
             self.de += g_ewald_qm
             grad_class._finalize(self)
-    return QMMM(scf_grad)
 
-# A tag to label the derived class
-class _QMMM:
-    pass
-class _QMMMGrad:
-    pass
+    qmmm = qmmm_gas.itrf.qmmm_grad_for_scf(scf_grad)
+    qmmm.de_ewald_mm = None
+    qmmm._keys.update(['de_ewald_mm'])
+    qmmm.__class__.dump_flags = QMMM.dump_flags
+    qmmm.__class__.grad_ewald = QMMM.grad_ewald
+    qmmm.__class__._finalize = QMMM._finalize
+    return qmmm
