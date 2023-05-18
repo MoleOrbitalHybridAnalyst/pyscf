@@ -69,7 +69,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         if self.charge_model == 'gaussian':
             return self._env[self._atm[:,gto.PTR_ZETA]]
         else:
-            return 1e16
+            return np.ones(self.natm) * 1e16
 
     def get_ewald_params(self, precision=None, rcut=None):
         if rcut is None:
@@ -150,7 +150,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         return ewovrl + ewself + ewg
 
-def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, unit='Angstrom'):
+def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, grid_spacing=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM
     particles.
 
@@ -192,9 +192,20 @@ def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, unit='Angstrom')
             radii = radii / param.BOHR
         zeta = 1 / radii**2
 
+    kwargs = {'charges': charges, 'zeta': zeta}
+
     if not is_au(unit):
         a = a / param.BOHR
+        if rcut is not None:
+            rcut = rcut / param.BOHR
+        if grid_spacing is not None:
+            grid_spacing = grid_spacing / param.BOHR
 
-    return Cell(atoms, a, charges=charges, zeta=zeta)
+    if rcut is not None:
+        kwargs['rcut'] = rcut
+    if grid_spacing is not None:
+        kwargs['grid_spacing'] = grid_spacing
+
+    return Cell(atoms, a, **kwargs)
 
 create_mm_cell = create_mm_mol
