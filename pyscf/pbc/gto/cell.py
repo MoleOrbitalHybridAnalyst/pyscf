@@ -754,7 +754,7 @@ def get_ewald_params(cell, precision=None, mesh=None):
     else:
         mesh = _cut_mesh_for_ewald(cell, mesh)
         ke_cutoff = pbctools.mesh_to_cutoff(cell.lattice_vectors(), mesh).min()
-        log_precision = np.log(precision / (cell.atom_charges().sum()*16*np.pi**2))
+        log_precision = np.log(precision / (np.abs(cell.atom_charges()).sum()*16*np.pi**2))
         ew_eta = np.sqrt(-ke_cutoff/(2*log_precision))
         ew_cut = _estimate_rcut(ew_eta**2, 0, 1., precision)
     return ew_eta, ew_cut

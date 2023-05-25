@@ -72,6 +72,9 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         self._built = True
 
+    def get_lattice_Ls(self):
+        return np.zeros((1,3))
+
     def get_ewald_params(self, precision=None, rcut=None):
         if rcut is None:
             ew_cut = self.rcut
@@ -84,7 +87,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         ew_eta = 1 / ew_cut * np.sqrt(lambertw(1/e*np.sqrt(Q/2/self.vol)).real)
         return ew_eta, ew_cut
 
-    def get_ewald_pot(self, coords1, coords2=None, charges2=None, Lall0=False):
+    def get_ewald_pot(self, coords1, coords2=None, charges2=None):
         assert self.dimension == 3
         assert (coords2 is None and charges2 is None) or (coords2 is not None and charges2 is not None)
 
@@ -96,13 +99,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         ew_eta, ew_cut = self.get_ewald_params()
         mesh = self.mesh
 
-        b = self.reciprocal_vectors(norm_to=1)
-        heights_inv = lib.norm(b, axis=1)
-        rcut = self.rcut
-        nimgs = np.ceil(rcut * heights_inv).astype(int)
-        Lall = self.get_lattice_Ls(rcut=ew_cut, nimgs=nimgs)
-        if Lall0:
-            Lall = np.zeros((1,3))
+        Lall = self.get_lattice_Ls()
 
         rLij = coords1[:,None,:] - coords2[None,:,:] + Lall[:,None,None,:]
         r = np.sqrt(lib.einsum('Lijx,Lijx->Lij', rLij, rLij))
