@@ -7,7 +7,7 @@ from pyscf.gto.mole import is_au
 from pyscf.data.elements import charge
 from pyscf.lib import param, logger
 from pyscf.pbc.gto.cell import _cut_mesh_for_ewald
-from scipy.special import erf, erfc
+from scipy.special import erf, erfc, lambertw
 from pyscf import lib
 
 class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
@@ -29,14 +29,13 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             rho(r) = charge * Norm * exp(-zeta * r^2)
 
     '''
-    def __init__(self, atoms, a, rcut=20.0, grid_spacing=2.0, charges=None, zeta=None):
+    def __init__(self, atoms, a, rcut=20.0, charges=None, zeta=None):
         pbc.gto.Cell.__init__(self)
         self.atom = self._atom = atoms
         self.unit = 'Bohr'
         self.charge_model = 'point'
         self.a = a
         self.rcut = rcut
-        self.mesh = np.ceil(np.diag(self.lattice_vectors()) / grid_spacing).astype(int)
 
         # Initialize ._atm and ._env to save the coordinates and charges and
         # other info of MM particles
@@ -63,6 +62,14 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             _atm[:,gto.PTR_ZETA] = gto.PTR_ENV_START + natm*4 + numpy.arange(natm)
 
         self._atm = _atm
+
+        eta, _ = self.get_ewald_params()
+        e = self.precision
+        Q = np.sum(self.atom_charges()**2)
+        L = self.vol**(1/3)
+        kmax = np.sqrt(3)*eta/2/np.pi * np.sqrt(lambertw( 4*Q**(2/3)/3/np.pi**(2/3)/L**2/eta**(2/3) / e**(4/3) ).real)
+        self.mesh = np.ceil(np.diag(self.lattice_vectors()) * kmax).astype(int) * 2 + 1
+
         self._built = True
 
     def get_ewald_params(self, precision=None, rcut=None):
@@ -72,10 +79,12 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ew_cut = rcut
         if precision is None:
             precision = self.precision
-        ew_eta = numpy.sqrt(max(numpy.log(4*numpy.pi*ew_cut**2/precision)/ew_cut**2, .1))
+        e = precision
+        Q = np.sum(self.atom_charges()**2)
+        ew_eta = 1 / ew_cut * np.sqrt(lambertw(1/e*np.sqrt(Q/2/self.vol)).real)
         return ew_eta, ew_cut
 
-    def get_ewald_pot(self, coords1, coords2=None, charges2=None):
+    def get_ewald_pot(self, coords1, coords2=None, charges2=None, Lall0=False):
         assert self.dimension == 3
         assert (coords2 is None and charges2 is None) or (coords2 is not None and charges2 is not None)
 
@@ -92,6 +101,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         rcut = self.rcut
         nimgs = np.ceil(rcut * heights_inv).astype(int)
         Lall = self.get_lattice_Ls(rcut=ew_cut, nimgs=nimgs)
+        if Lall0:
+            Lall = np.zeros((1,3))
 
         rLij = coords1[:,None,:] - coords2[None,:,:] + Lall[:,None,None,:]
         r = np.sqrt(lib.einsum('Lijx,Lijx->Lij', rLij, rLij))
@@ -127,7 +138,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         return ewovrl + ewself + ewg
 
-def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, grid_spacing=None, unit='Angstrom'):
+def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM
     particles.
 
@@ -175,13 +186,9 @@ def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, grid_
         a = a / param.BOHR
         if rcut is not None:
             rcut = rcut / param.BOHR
-        if grid_spacing is not None:
-            grid_spacing = grid_spacing / param.BOHR
 
     if rcut is not None:
         kwargs['rcut'] = rcut
-    if grid_spacing is not None:
-        kwargs['grid_spacing'] = grid_spacing
 
     return Cell(atoms, a, **kwargs)
 
