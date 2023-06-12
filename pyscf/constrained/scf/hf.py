@@ -127,6 +127,8 @@ class CRHF(RHF):
             return function_value, np.array(jacobians)
 
         result = root(root_finding_function, self.lagrange_multiplier, jac=True)
+        self.converged = self.converged and result['success']
+        self.lagrange_multiplier = result['x']
 
 
 if __name__ == "__main__":
