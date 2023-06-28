@@ -7,6 +7,7 @@ from pyscf.scf.hf import RHF
 import numpy as np
 from scipy.linalg import sqrtm, eigh
 from scipy.optimize import root
+from pyscf.lib import logger
 
 class CRHF(RHF):
     def __init__(self, mol, bondatmlst, bond_order_constraint, *args, **kwargs):
@@ -72,6 +73,17 @@ class CRHF(RHF):
                     L[i,j] -= (bp - bm) * l / dx
         return (L + L.T) / 2
 
+    def energy_elec(mf, dm=None, h1e=None, vhf=None):
+        if dm is None: dm = mf.make_rdm1()
+        if h1e is None: h1e = mf.get_hcore()
+        if vhf is None: vhf = super().get_veff(mf.mol, dm)
+        e1 = np.einsum('ij,ji->', h1e, dm).real
+        e_coul = np.einsum('ij,ji->', vhf, dm).real * .5
+        mf.scf_summary['e1'] = e1
+        mf.scf_summary['e2'] = e_coul
+        logger.debug(mf, 'E1 = %s  E_coul = %s', e1, e_coul)
+        return e1+e_coul, e_coul
+
     def kernel(self, **kwargs):
 
         overlap = self.get_ovlp()
@@ -129,13 +141,14 @@ class CRHF(RHF):
         result = root(root_finding_function, self.lagrange_multiplier, jac=True)
         self.converged = self.converged and result['success']
         self.lagrange_multiplier = result['x']
+        return self.energy_tot()
 
 
 if __name__ == "__main__":
     from pyscf import gto, scf
 
     mol = gto.Mole()
-    mol.verbose = 0
+    mol.verbose = 4
     mol.atom = '''
     O        0.000000    0.000000    0.117790
     H        0.000000    0.755453   -0.471161
@@ -151,9 +164,10 @@ if __name__ == "__main__":
 
     bond_atom_list = [[1,2]]
     required_bond_order = [3e-2]
-    mf = CRHF(mol, bond_atom_list, required_bond_order)
-    overlap = mf.get_ovlp()
-    mf.kernel()
+    mf2 = CRHF(mol, bond_atom_list, required_bond_order)
+    overlap = mf2.get_ovlp()
+    print("SCF energy w/ constraint:", mf2.kernel(dm0=dm0))
+    print("SCF energy w/o constraint:", mf.e_tot)
 
-    assert(np.abs(np.max(np.array(mf.bond_order(overlap, mf.make_rdm1())) - np.array(required_bond_order))) < 1e-10)
+    assert(np.abs(np.max(np.array(mf2.bond_order(overlap, mf2.make_rdm1())) - np.array(required_bond_order))) < 1e-10)
 
