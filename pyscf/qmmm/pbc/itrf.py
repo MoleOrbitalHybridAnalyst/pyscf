@@ -146,14 +146,18 @@ def qmmm_for_scf(scf_method, mm_mol):
                 if self.mm_ewald_pot is not None:
                     mm_ewald_pot = self.mm_ewald_pot
                 else:
+                    cput0 = (logger.process_clock(), logger.perf_counter())
                     mm_ewald_pot = self.get_mm_ewald_pot(mol, mm_mol)
                     self.mm_ewald_pot = mm_ewald_pot
+                    logger.timer(self, 'get_mm_ewald_pot', *cput0)
             if qm_ewald_pot is None:
                 if self.qm_ewald_hess is not None:
                     qm_ewald_pot = lib.einsum('ij,j->i',
                                     self.qm_ewald_hess, self.get_qm_charges(dm))
                 else:
+                    cput0 = (logger.process_clock(), logger.perf_counter())
                     qm_ewald_pot = self.get_qm_ewald_pot(mol, dm)
+                    logger.timer(self, 'get_qm_ewald_pot', *cput0)
 
             ewald_pot = mm_ewald_pot + qm_ewald_pot
             vdiff = self.get_vdiff(mol, ewald_pot)
@@ -300,15 +304,16 @@ def qmmm_grad_for_scf(scf_grad):
             logger.info(self, 'lattice vectors  a1 [%.9f, %.9f, %.9f]', *_a[0])
             logger.info(self, '                 a2 [%.9f, %.9f, %.9f]', *_a[1])
             logger.info(self, '                 a3 [%.9f, %.9f, %.9f]', *_a[2])
-            if self.verbose >= logger.DEBUG1:
-                logger.debug1(self, 'Charge      Location')
+            if self.verbose >= logger.DEBUG2:
+                logger.debug2(self, 'Charge      Location')
                 coords = self.base.mm_mol.atom_coords()
                 charges = self.base.mm_mol.atom_charges()
                 for i, z in enumerate(charges):
-                    logger.debug1(self, '%.9g    %s', z, coords[i])
+                    logger.debug2(self, '%.9g    %s', z, coords[i])
             return self
 
         def grad_ewald(self, dm=None, with_mm=False, mm_ewald_pot=None, qm_ewald_pot=None):
+            cput0 = (logger.process_clock(), logger.perf_counter())
             # pbc correction grad w.r.t. qm and mm atom positions
             if dm is None: dm = self.base.make_rdm1()
             mol = self.base.mol
@@ -389,8 +394,10 @@ def qmmm_grad_for_scf(scf_grad):
             qm_ewg_grad = -np.imag(lib.dot(qm_charges.reshape(-1,1) * qm_SI.conj(), tot_ZSI.reshape(-1,1) * ZexpG2_mod))
             if with_mm:
                 mm_ewg_grad = -np.imag(lib.dot(mm_charges.reshape(-1,1) * mm_SI.conj(), qm_ZSI.reshape(-1,1) * ZexpG2_mod))
+                logger.timer(self, 'grad_ewald', *cput0)
                 return qm_ewg_grad + qm_ewovrl_grad + qm_charge_grad, mm_ewg_grad + mm_ewovrl_grad
             else:
+                logger.timer(self, 'grad_ewald', *cput0)
                 return qm_ewg_grad + qm_ewovrl_grad + qm_charge_grad
 
         def _finalize(self):

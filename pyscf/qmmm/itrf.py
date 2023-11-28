@@ -127,6 +127,7 @@ def qmmm_for_scf(scf_method, mm_mol):
             return self
 
         def get_hcore(self, mol=None):
+            cput0 = (logger.process_clock(), logger.perf_counter())
             if mol is None:
                 mol = self.mol
             mm_mol = self.mm_mol
@@ -163,6 +164,7 @@ def qmmm_for_scf(scf_method, mm_mol):
                 for i0, i1 in lib.prange(0, charges.size, blksize):
                     j3c = mol.intor('int1e_grids', hermi=1, grids=coords[i0:i1])
                     h1e += numpy.einsum('kpq,k->pq', j3c, -charges[i0:i1])
+            logger.timer(self, 'get_hcore', *cput0)
             return h1e
 
         def energy_nuc(self):
@@ -267,6 +269,7 @@ def qmmm_grad_for_scf(scf_grad):
 
         def get_hcore(self, mol=None):
             ''' (QM 1e grad) + <-d/dX i|q_mm/r_mm|j>'''
+            cput0 = (logger.process_clock(), logger.perf_counter())
             if mol is None:
                 mol = self.mol
             mm_mol = self.base.mm_mol
@@ -297,6 +300,7 @@ def qmmm_grad_for_scf(scf_grad):
                 for i0, i1 in lib.prange(0, charges.size, blksize):
                     j3c = mol.intor('int1e_grids_ip', grids=coords[i0:i1])
                     g_qm += numpy.einsum('ikpq,k->ipq', j3c, charges[i0:i1])
+            logger.timer(self, 'get_hcore', *cput0)
             return g_qm
 
         def grad_hcore_mm(self, dm, mol=None):

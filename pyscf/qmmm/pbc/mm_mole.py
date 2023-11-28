@@ -36,6 +36,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         self.charge_model = 'point'
         self.a = a
         self.rcut = rcut
+        if min(np.diag(self.a)) < 2 * rcut:
+            lib.logger.warn(self, 'box size < 2 * rcut')
 
         # Initialize ._atm and ._env to save the coordinates and charges and
         # other info of MM particles
