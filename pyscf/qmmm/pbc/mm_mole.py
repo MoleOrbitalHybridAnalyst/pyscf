@@ -29,15 +29,17 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             rho(r) = charge * Norm * exp(-zeta * r^2)
 
     '''
-    def __init__(self, atoms, a, rcut=20.0, charges=None, zeta=None):
+    def __init__(self, atoms, a, 
+            rcut_ewald=20.0, rcut_pc=None, rcut_dip=None,
+            charges=None, zeta=None):
         pbc.gto.Cell.__init__(self)
         self.atom = self._atom = atoms
         self.unit = 'Bohr'
         self.charge_model = 'point'
         self.a = a
-        self.rcut = rcut
-        if min(np.diag(self.a)) < 2 * rcut:
-            lib.logger.warn(self, 'box size < 2 * rcut')
+        self.rcut_ewald = rcut_ewald
+        self.rcut_pc = rcut_pc
+        self.rcut_dip = rcut_dip
 
         # Initialize ._atm and ._env to save the coordinates and charges and
         # other info of MM particles
@@ -75,11 +77,15 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         self._built = True
 
     def get_lattice_Ls(self):
-        return np.zeros((1,3))
+        Ts = lib.cartesian_prod((np.arange(-1, 2),
+                                 np.arange(-1, 2),
+                                 np.arange(-1, 2)))
+        Lall = np.dot(Ts, self.lattice_vectors())
+        return Lall
 
     def get_ewald_params(self, precision=None, rcut=None):
         if rcut is None:
-            ew_cut = self.rcut
+            ew_cut = self.rcut_ewald
         else:
             ew_cut = rcut
         if precision is None:
@@ -103,12 +109,18 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         Lall = self.get_lattice_Ls()
 
-        rLij = coords1[:,None,:] - coords2[None,:,:] + Lall[:,None,None,:]
-        r = np.sqrt(lib.einsum('Lijx,Lijx->Lij', rLij, rLij))
+        all_coords2 = lib.direct_sum('jx-Lx->Ljx', coords2, Lall)
+        rLij = lib.direct_sum('ix-Ljx->Lijx', coords1, all_coords2)
+#        rLij = coords1[:,None,:] - coords2[None,:,:] + Lall[:,None,None,:]
+        r = np.sqrt(lib.einsum('Lijx,Lijx->Lji', rLij, rLij))
         rLij = None
         r[r<1e-16] = 1e200
+        dist2 = lib.direct_sum('Ljx-x->Ljx', all_coords2, np.mean(coords1, axis=0))
+        dist2 = lib.einsum('Ljx,Ljx->Lj', dist2, dist2)
+        r[dist2 > ew_cut**2] = 1e200
+        breakpoint()
         if charges2 is not None:
-            ewovrl = -lib.einsum('j,Lij->i', charges2, erf(ew_eta * r) / r)
+            ewovrl = -lib.einsum('j,Lji->i', charges2, erf(ew_eta * r) / r)
         else:
             ewovrl = -np.sum(erf(ew_eta * r) / r, axis=0)
 
@@ -137,7 +149,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         return ewovrl + ewself + ewg
 
-def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, unit='Angstrom'):
+def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, 
+        rcut_ewald=None, rcut_pc=None, rcut_dip=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM
     particles.
 
@@ -183,11 +196,19 @@ def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, rcut=None, unit=
 
     if not is_au(unit):
         a = a / param.BOHR
-        if rcut is not None:
-            rcut = rcut / param.BOHR
+        if rcut_ewald is not None:
+            rcut_ewald = rcut_ewald / param.BOHR
+        if rcut_pc is not None:
+            rcut_pc = rcut_pc / param.BOHR
+        if rcut_dip is not None:
+            rcut_dip = rcut_dip / param.BOHR
 
-    if rcut is not None:
-        kwargs['rcut'] = rcut
+    if rcut_ewald is not None:
+        kwargs['rcut_ewald'] = rcut_ewald
+    if rcut_pc is not None:
+        kwargs['rcut_pc'] = rcut_pc
+    if rcut_dip is not None:
+        kwargs['rcut_dip'] = rcut_dip
 
     return Cell(atoms, a, **kwargs)
 
