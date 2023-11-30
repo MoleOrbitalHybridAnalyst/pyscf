@@ -38,6 +38,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         self.charge_model = 'point'
         self.a = a
         self.rcut_ewald = rcut_ewald
+        if rcut_pc is None:
+            rcut_pc = rcut_ewald
         self.rcut_pc = rcut_pc
         self.rcut_dip = rcut_dip
 
@@ -107,24 +109,41 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         ew_eta, ew_cut = self.get_ewald_params()
         mesh = self.mesh
 
-        Lall = self.get_lattice_Ls()
+        if charges2 is not None:
+            Lall = self.get_lattice_Ls()
+        else:
+            Lall = np.zeros((1,3))
 
         all_coords2 = lib.direct_sum('jx-Lx->Ljx', coords2, Lall)
-        rLij = lib.direct_sum('ix-Ljx->Lijx', coords1, all_coords2)
-#        rLij = coords1[:,None,:] - coords2[None,:,:] + Lall[:,None,None,:]
-        r = np.sqrt(lib.einsum('Lijx,Lijx->Lji', rLij, rLij))
-        rLij = None
-        r[r<1e-16] = 1e200
-        dist2 = lib.direct_sum('Ljx-x->Ljx', all_coords2, np.mean(coords1, axis=0))
-        dist2 = lib.einsum('Ljx,Ljx->Lj', dist2, dist2)
-        r[dist2 > ew_cut**2] = 1e200
-        breakpoint()
         if charges2 is not None:
-            ewovrl = -lib.einsum('j,Lji->i', charges2, erf(ew_eta * r) / r)
+            all_charges2 = np.hstack([charges2] * 27)
         else:
-            ewovrl = -np.sum(erf(ew_eta * r) / r, axis=0)
+            all_charges2 = None
+        dist2 = lib.direct_sum('Ljx-x->Ljx', all_coords2, np.mean(coords1, axis=0))
+        dist2 = lib.einsum('Ljx,Ljx->Lj', dist2, dist2).ravel()
+        r = lib.direct_sum('ix-Ljx->Lijx', coords1, all_coords2)
+        r = np.sqrt(lib.einsum('Lijx,Lijx->Lji', r, r)).reshape(-1,len(coords1))
+        r[r<1e-16] = 1e200
 
-        if charges2 is not None:
+#        breakpoint()
+        # substract the real-space Coulomb within rcut_pc
+        mask_pc = dist2 <= self.rcut_pc**2
+        if all_charges2 is not None:
+            rji = r[mask_pc]
+            charges = all_charges2[mask_pc]
+            ewovrl = -lib.einsum('j,ji->i', charges, 1 / rji)
+        else:
+            assert mask_pc.all()              # all qm atoms should be within rcut_pc
+            assert r.shape[0] == r.shape[1]   # real-space should not see qm images
+            ewovrl = - 1 / r
+
+        # ewald real-space sum
+        if all_charges2 is not None:
+            ewovrl += lib.einsum('j,ji->i', all_charges2, erfc(ew_eta * r) / r)
+        else:
+            ewovrl += erfc(ew_eta * r) / r
+
+        if all_charges2 is not None:
             ewself = 0
         else:
             ewself = -np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)

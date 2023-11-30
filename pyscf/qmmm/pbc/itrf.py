@@ -123,9 +123,6 @@ def qmmm_for_scf(scf_method, mm_mol):
                 rcut_pc = mm_mol.rcut_pc
             if rcut_dip is None:
                 rcut_dip = mm_mol.rcut_dip
-            if rcut_pc is None:
-                logger.warn(self, 'rcut_pc is not given, will use rcut_ewald')
-                rcut_pc = mm_mol.rcut_ewald
             if rcut_dip is None:
                 rcut_dip = rcut_pc
 
@@ -152,9 +149,11 @@ def qmmm_for_scf(scf_method, mm_mol):
             dist2 = all_coords - qm_center
             dist2 = lib.einsum('ix,ix->i', dist2, dist2)
 
+            # charges within rcut_dip exactly go into hcore
             mask = dist2 <= rcut_dip**2
             charges = all_charges[mask]
             coords = all_coords[mask]
+            logger.note(self, '%d MM charges see directly QM density'%charges.shape[0])
             nao = mol.nao
             max_memory = self.max_memory - lib.current_memory()[0]
             blksize = int(min(max_memory*1e6/8/nao**2, 200))
@@ -184,39 +183,30 @@ def qmmm_for_scf(scf_method, mm_mol):
 
             aoslices = mol.aoslice_by_atom()
 
-            breakpoint()
-            # dipole approx
+#            breakpoint()
+            # charges between rcut_dip and rcut_pc are treated as dipole+pc
             mask = (dist2 > rcut_dip**2) & (dist2 <= rcut_pc**2)
             charges = all_charges[mask]
             coords = all_coords[mask]
+            logger.note(self, '%d MM charges see QM density as dipoles'%charges.shape[0])
             if s1r is None:
                 s1r = list()
                 for i in range(mol.natm):
                     with mol.with_common_orig(mol.atom_coord(i)):
                         s1r.append(mol.intor('int1e_r'))
+            s1 = mol.intor('int1e_ovlp')
             for i in range(mol.natm):
                 p0, p1 = aoslices[i][2:]
                 r_mm_qm = coords - mol.atom_coord(i)
                 R_mm_qm = np.linalg.norm(r_mm_qm, axis=-1)
-#                mask_ewald = R_mm_qm <= mm_mol.rcut_ewald
-#                q_over_R = lib.einsum('ix,i,i->x', 
-#                    r_mm_qm[mask_ewald], 1/R_mm_qm[mask_ewald]**3, charges[mask_ewald])
+                # dip
                 q_over_R = lib.einsum('ix,i,i->x', r_mm_qm, 1/R_mm_qm**3, charges)
                 h1e[p0:p1] -= lib.einsum('x,xpq->pq', q_over_R, s1r[i][:,p0:p1])
-
-            # charge approx
-            mask = (dist2 >= rcut_dip**2) & (dist2 <= mm_mol.rcut_ewald**2)
-            charges = all_charges[mask]
-            coords = all_coords[mask]
-            s1 = mol.intor('int1e_ovlp')
-            for i in range(mol.natm):
-                p0, p1 = aoslices[i][2:]
-                R_mm_qm = coords - mol.atom_coord(i)
-                R_mm_qm = np.linalg.norm(R_mm_qm, axis=-1)
-#                mask_ewald = R_mm_qm <= mm_mol.rcut_ewald
-#                q_over_R = lib.einsum('i,i->', charges[mask_ewald], 1/R_mm_qm[mask_ewald])
+                # pc
                 q_over_R = lib.einsum('i,i->', charges, 1/R_mm_qm)
                 h1e[p0:p1] -= q_over_R * s1[p0:p1]
+
+            # charges beyond rcut_pc will be handled by ewald
 
             h1e = (h1e + h1e.T) / 2
             logger.timer(self, 'get_hcore', *cput0)
@@ -306,9 +296,22 @@ def qmmm_for_scf(scf_method, mm_mol):
 
         def energy_nuc(self):
             # gas phase nuc energy
-            nuc = self.mol.energy_nuc()
-            coords = self.mm_mol.atom_coords()
-            charges = self.mm_mol.atom_charges()
+            nuc = self.mol.energy_nuc()    # qm_nuc - qm_nuc
+
+            # select mm atoms within rcut_pc
+            mol = self.mol
+            Ls = self.mm_mol.get_lattice_Ls()
+            qm_center = np.mean(mol.atom_coords(), axis=0)
+            all_coords = lib.direct_sum('ix+Lx->Lix', 
+                    mm_mol.atom_coords(), Ls).reshape(-1,3)
+            all_charges = np.hstack([mm_mol.atom_charges()] * len(Ls))
+            dist2 = all_coords - qm_center
+            dist2 = lib.einsum('ix,ix->i', dist2, dist2)
+            mask = dist2 <= self.mm_mol.rcut_pc**2
+            charges = all_charges[mask]
+            coords = all_coords[mask]
+
+            # qm_nuc - mm_pc
             for j in range(self.mol.natm):
                 q2, r2 = self.mol.atom_charge(j), self.mol.atom_coord(j)
                 r = lib.norm(r2-coords, axis=1)
