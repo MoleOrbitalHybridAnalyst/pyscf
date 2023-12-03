@@ -122,7 +122,15 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         R = lib.direct_sum('ix-jx->ijx', coords1, all_coords2)
         r = np.sqrt(lib.einsum('ijx,ijx->ij', R, R))
         r[r<1e-16] = np.inf
-        r[r>ew_cut] = np.inf
+        # TODO handle this cutoff more elegantly
+#        r[r>ew_cut] = 1e60
+
+        # TODO
+        # [√] check both qm and mm real-space Coulomb energy correctness
+        # [√] check mm_ewald_pot ew_cut independency
+        # [√] check mm_ewald energy correctness
+        # [?] check qm_ewald_pot ew_cut independency
+        # [?] check qm_ewald_pot energy correctness
 
 #        breakpoint()
         # substract the real-space Coulomb within rcut_dip
@@ -141,6 +149,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewovrl0 = -lib.einsum('ij,j->i', Tij, charges)
             # qm dip - mm pc
             ewovrl1 = -lib.einsum('j,ija->ia', charges, Tija)
+#            return np.zeros_like(ewovrl0), np.zeros_like(ewovrl1)
+#            return ewovrl0, ewovrl1
         else:
             assert mask.all()              # all qm atoms should be within rcut_dip
             assert r.shape[0] == r.shape[1]   # real-space should not see qm images
@@ -149,14 +159,14 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             Tijab  = 3 * lib.einsum('ija,ijb->ijab', R, R) 
             Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
             Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
-            # ew0 = -d^2 U / dQi dQj
-            # ew1 = -d^2 U / dQi dDja
-            # ew2 = -d^2 U / dDia dDjb
+            # ew0 = -d^2 E / dQi dQj
+            # ew1 = -d^2 E / dQi dDja
+            # ew2 = -d^2 E / dDia dDjb
             # TODO beyond dip
-#            breakpoint()
-            ewovrl0 = -Tij                    # fuv = dQi/druv ew0ij Qj
-            ewovrl1 =  Tija                   # fuv = dQi/druv ew1ija Dja - Qi ew1ija d(Dja)/druv
-            ewovrl2 =  Tijab                  # fuv = d(Dia)/druv ew2ijab Djb
+            ewovrl0 = -Tij
+            ewovrl1 =  Tija
+            ewovrl2 =  Tijab
+#            return ewovrl0, ewovrl1, ewovrl2
 
         # ewald real-space sum
         if all_charges2 is not None:
@@ -174,13 +184,15 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             # Tij = \hat{1/r} = f0 / r = erfc(r) / r
             Tij = erfc(ew_eta * r) / r
             # Tija = -Rija \hat{1/r^3} = -Rija / r^2 ( \hat{1/r} + 2 eta/sqrt(pi) exp(-eta^2 r^2) )
-            invr3 = -(Tij + 2*ew_eta/np.sqrt(np.pi) * ekR) / r**2
-            Tija = lib.einsum('ijx,ij->ijx', R, invr3)
+            invr3 = (Tij + 2*ew_eta/np.sqrt(np.pi) * ekR) / r**2
+            Tija = -lib.einsum('ijx,ij->ijx', R, invr3)
             # Tijab = (3 RijaRijb - Rij^2 delta_ab) \hat{1/r^5}
             Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R, R, 1/r**2)
             Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r), np.eye(3))
-            invr5 = invr3 + 4/3*ew_eta**3/np.sqrt(np.pi) * ekR
+            invr5 = invr3 + 4/3*ew_eta**3/np.sqrt(np.pi) * ekR # NOTE this is invr5 * r**2
             Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
+            # NOTE the below is present in Eq 8 but missing in Eq 12
+            Tijab += 4/3*ew_eta**3/np.sqrt(np.pi)*lib.einsum('ij,ab->ijab', ekR, np.eye(3))
 
             ewovrl0 += Tij
             ewovrl1 -= Tija
@@ -205,6 +217,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         coulG = 4*np.pi / absG2
         coulG *= weights
+        # NOTE Gpref is actually Gpref*2
         Gpref = np.exp(-absG2/(4*ew_eta**2)) * coulG
 
         GvR2 = lib.einsum('gx,ix->ig', Gv, coords2)
@@ -223,16 +236,16 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewg0 += lib.einsum('ig,g,g->i', sinGvR1, zsinGvR2, Gpref)
             # TODO ewg1: dip-dip dip-quad
             # qm dip - mm pc
-            ewg1  = 2 * lib.einsum('gx,ig,g,g->ix', Gv, cosGvR1, zsinGvR2, Gpref)
-            ewg1 -= 2 * lib.einsum('gx,ig,g,g->ix', Gv, sinGvR1, zcosGvR2, Gpref)
+            ewg1  = lib.einsum('gx,ig,g,g->ix', Gv, cosGvR1, zsinGvR2, Gpref)
+            ewg1 -= lib.einsum('gx,ig,g,g->ix', Gv, sinGvR1, zcosGvR2, Gpref)
             # TODO ewg2: quad-pc quad-dip quad-quad
         else:
             # qm pc - qm pc
             ewg0  = lib.einsum('ig,jg,g->ij', cosGvR2, cosGvR2, Gpref)
             ewg0 += lib.einsum('ig,jg,g->ij', sinGvR2, sinGvR2, Gpref)
             # qm pc - qm dip
-            ewg1  = 2 * lib.einsum('gx,ig,jg,g->ijx', Gv, cosGvR2, sinGvR2, Gpref)
-            ewg1 -= 2 * lib.einsum('gx,ig,jg,g->ijx', Gv, sinGvR2, cosGvR2, Gpref)
+            ewg1  = lib.einsum('gx,ig,jg,g->ijx', Gv, sinGvR2, cosGvR2, Gpref)
+            ewg1 -= lib.einsum('gx,ig,jg,g->ijx', Gv, cosGvR2, sinGvR2, Gpref)
             # qm dip - qm dip
             ewg2  = lib.einsum('gx,gy,ig,jg,g->ijxy', Gv, Gv, cosGvR2, cosGvR2, Gpref)
             ewg2 += lib.einsum('gx,gy,ig,jg,g->ijxy', Gv, Gv, sinGvR2, sinGvR2, Gpref)
@@ -240,6 +253,17 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         if charges2 is not None:
             return ewovrl0 + ewg0, ewovrl1 + ewg1
         else:
+#            # @@@@@@@@@@
+#            np.save("ewovrl0", ewovrl0)
+#            np.save("ewself0", ewself0)
+#            np.save("ewg0", ewg0)
+#            np.save("ewovrl1", ewovrl1)
+#            np.save("ewg1", ewg1)
+#            np.save("ewovrl2", ewovrl2)
+#            np.save("ewself2", ewself2)
+#            np.save("ewg2", ewg2)
+#            return ewovrl0 + ewself0 + ewg0, ewovrl1 + ewself1 + ewg1, np.zeros_like(ewovrl2 + ewself2 + ewg2)
+#            # @@@@@@@@@@
             return ewovrl0 + ewself0 + ewg0, ewovrl1 + ewself1 + ewg1, ewovrl2 + ewself2 + ewg2
 
 def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, 

@@ -117,7 +117,7 @@ def qmmm_for_scf(scf_method, mm_mol):
             ewpot0  = lib.einsum('ij,j->i', qm_ewald_hess[0], Q)
             D = self.get_qm_dipoles(dm)
             ewpot0 += lib.einsum('ijx,jx->i', qm_ewald_hess[1], D)
-            ewpot1  = lib.einsum('ijx,j->ix', qm_ewald_hess[1], Q)
+            ewpot1  = lib.einsum('ijx,i->jx', qm_ewald_hess[1], Q)
             ewpot1 += lib.einsum('ijxy,jy->ix', qm_ewald_hess[2], D)
             return ewpot0, ewpot1
 
@@ -310,6 +310,8 @@ def qmmm_for_scf(scf_method, mm_mol):
 
         def energy_ewald(self, dm=None, mm_ewald_pot=None, qm_ewald_pot=None):
             # QM-QM and QM-MM pbc correction
+            if dm is None:
+                dm = self.make_rdm1()
             if mm_ewald_pot is None:
                 if self.mm_ewald_pot is not None:
                     mm_ewald_pot = self.mm_ewald_pot
@@ -321,6 +323,7 @@ def qmmm_for_scf(scf_method, mm_mol):
             e  = lib.einsum('i,i->', ewald_pot, self.get_qm_charges(dm))
             ewald_pot = mm_ewald_pot[1] + qm_ewald_pot[1] / 2
             e += lib.einsum('ix,ix->', ewald_pot, self.get_qm_dipoles(dm))
+            # TODO add energy correction if sum(charges) !=0 ?
             return e
 
         def energy_nuc(self):
