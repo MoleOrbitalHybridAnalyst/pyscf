@@ -109,17 +109,20 @@ def qmmm_for_scf(scf_method, mm_mol):
                 mm_mol.atom_coords(), mm_mol.atom_charges())
 
         def get_qm_ewald_pot(self, mol, dm, qm_ewald_hess=None):
-            # hess = d^2 E / dQ_i dQ_j, d^2 E / dQ_i dD_ja, d^2 E / dDia dDjb
+            # hess = d^2 E / dQ_i dQ_j, d^2 E / dQ_i dD_ja, d^2 E / dDia dDjb, d^2 E/ dQ_i dO_jab
             if qm_ewald_hess is None:
                 qm_ewald_hess = self.mm_mol.get_ewald_pot(mol.atom_coords())
                 self.qm_ewald_hess = qm_ewald_hess
-            Q = self.get_qm_charges(dm)
-            ewpot0  = lib.einsum('ij,j->i', qm_ewald_hess[0], Q)
-            D = self.get_qm_dipoles(dm)
-            ewpot0 += lib.einsum('ijx,jx->i', qm_ewald_hess[1], D)
-            ewpot1  = lib.einsum('ijx,i->jx', qm_ewald_hess[1], Q)
-            ewpot1 += lib.einsum('ijxy,jy->ix', qm_ewald_hess[2], D)
-            return ewpot0, ewpot1
+            charges = self.get_qm_charges(dm)
+            dips = self.get_qm_dipoles(dm)
+            quads = self.get_qm_quadrupoles(dm)
+            ewpot0  = lib.einsum('ij,j->i', qm_ewald_hess[0], charges)
+            ewpot0 += lib.einsum('ijx,jx->i', qm_ewald_hess[1], dips)
+            ewpot0 += lib.einsum('ijxy,jxy->i', qm_ewald_hess[3], quads)
+            ewpot1  = lib.einsum('ijx,i->jx', qm_ewald_hess[1], charges)
+            ewpot1 += lib.einsum('ijxy,jy->ix', qm_ewald_hess[2], dips)
+            ewpot2  = lib.einsum('ijxy,j->ixy', qm_ewald_hess[3], charges)
+            return ewpot0, ewpot1, ewpot2
 
         def get_hcore(self, mol=None, rcut_dip=None, s1r=None):
             cput0 = (logger.process_clock(), logger.perf_counter())
@@ -231,9 +234,8 @@ def qmmm_for_scf(scf_method, mm_mol):
                 for i in range(self.mol.natm):
                     with self.mol.with_common_orig(self.mol.atom_coord(i)):
                         s1r.append(self.mol.intor('int1e_r'))
-                return np.asarray(s1r)
-            else:
-                return self.s1r
+                self.s1r = np.asarray(s1r)
+            return self.s1r
 
         def get_qm_dipoles(self, dm, s1r=None):
             if s1r is None:
@@ -246,6 +248,35 @@ def qmmm_for_scf(scf_method, mm_mol):
                     -lib.einsum('uv,xvu->x', dm[p0:p1], s1r[iatm][:,:,p0:p1]))
             return np.asarray(qm_dipoles)
 
+        def get_s1rr(self):
+            '''
+            \int phi_u phi_v [3(r-Rc)\otimes(r-Rc) - |r-Rc\^2] /2 dr
+            '''
+            if self.s1rr is None:
+                s1rr = list()
+                nao = self.mol.nao
+                for i in range(self.mol.natm):
+                    with self.mol.with_common_orig(self.mol.atom_coord(i)):
+                        s1rr_ = self.mol.intor('int1e_rr').reshape((3,3,nao,nao))
+                        s1rr_trace = lib.einsum('xxuv->uv', s1rr_)
+                        s1rr_ = 3/2 * s1rr_
+                        for k in range(3):
+                            s1rr_[k,k] -= 0.5 * s1rr_trace
+                        s1rr.append(s1rr_)
+                self.s1rr = np.asarray(s1rr)
+            return self.s1rr
+
+        def get_qm_quadrupoles(self, dm, s1rr=None):
+            if s1rr is None:
+                s1rr = self.get_s1rr()
+            aoslices = self.mol.aoslice_by_atom()
+            qm_quadrupoles = list()
+            for iatm in range(self.mol.natm):
+                p0, p1 = aoslices[iatm, 2:]
+                qm_quadrupoles.append(
+                    -lib.einsum('uv,xyvu->xy', dm[p0:p1], s1rr[iatm][...,p0:p1]))
+            return np.asarray(qm_quadrupoles)
+
         def get_vdiff(self, mol, ewald_pot):
             '''
             vdiff_uv = d Q_I / d dm_uv ewald_pot[0]_I
@@ -254,15 +285,19 @@ def qmmm_for_scf(scf_method, mm_mol):
             vdiff = np.zeros((mol.nao, mol.nao))
             ovlp = self.get_ovlp()
             s1r = self.get_s1r()
+            s1rr = self.get_s1rr()
             aoslices = mol.aoslice_by_atom()
             for iatm in range(mol.natm):
                 v0 = ewald_pot[0][iatm] / 2
                 v1 = ewald_pot[1][iatm] / 2
+                v2 = ewald_pot[2][iatm] / 2
                 p0, p1 = aoslices[iatm, 2:]
                 vdiff[p0:p1] -= v0 * ovlp[p0:p1]
                 vdiff[:,p0:p1] -= v0 * ovlp[:,p0:p1]
                 vdiff[p0:p1] -= lib.einsum('x,xuv->uv', v1, s1r[iatm][:,p0:p1])
                 vdiff[:,p0:p1] -= lib.einsum('x,xuv->uv', v1, s1r[iatm][:,:,p0:p1])
+                vdiff[p0:p1] -= lib.einsum('xy,xyuv->uv', v2, s1rr[iatm][:,:,p0:p1])
+                vdiff[:,p0:p1] -= lib.einsum('xy,xyuv->uv', v2, s1rr[iatm][...,p0:p1])
             return vdiff
 
         def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
@@ -281,6 +316,7 @@ def qmmm_for_scf(scf_method, mm_mol):
                     logger.timer(self, 'get_mm_ewald_pot', *cput0)
             if qm_ewald_pot is None:
                 if self.qm_ewald_hess is not None:
+                    # FIXME TODO add charge-quad to get_qm_ewald_hess and get_qm_ewald_pot
                     qm_ewald_pot = self.get_qm_ewald_pot(
                             mol, dm, self.qm_ewald_hess)
                 else:
@@ -288,8 +324,11 @@ def qmmm_for_scf(scf_method, mm_mol):
                     qm_ewald_pot = self.get_qm_ewald_pot(mol, dm)
                     logger.timer(self, 'get_qm_ewald_pot', *cput0)
 
+            # FIXME TODO add charge-quad to get_vdiff, energy_ewald
             ewald_pot = \
-                mm_ewald_pot[0] + qm_ewald_pot[0], mm_ewald_pot[1] + qm_ewald_pot[1]
+                mm_ewald_pot[0] + qm_ewald_pot[0], \
+                mm_ewald_pot[1] + qm_ewald_pot[1], \
+                mm_ewald_pot[2] + qm_ewald_pot[2]
             vdiff = self.get_vdiff(mol, ewald_pot)
 
             veff = method_class.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
@@ -323,6 +362,11 @@ def qmmm_for_scf(scf_method, mm_mol):
             e  = lib.einsum('i,i->', ewald_pot, self.get_qm_charges(dm))
             ewald_pot = mm_ewald_pot[1] + qm_ewald_pot[1] / 2
             e += lib.einsum('ix,ix->', ewald_pot, self.get_qm_dipoles(dm))
+            ewald_pot = mm_ewald_pot[2] + qm_ewald_pot[2] / 2
+            e += lib.einsum('ixy,ixy->', ewald_pot, self.get_qm_quadrupoles(dm))
+            # @@@@@@@@
+#            print("qaud energy:", lib.einsum('ixy,ixy->', ewald_pot, self.get_qm_quadrupoles(dm)))
+            # @@@@@@@@
             # TODO add energy correction if sum(charges) !=0 ?
             return e
 
@@ -371,6 +415,7 @@ def qmmm_for_scf(scf_method, mm_mol):
 
     qmmm.mm_mol = mm_mol
     qmmm.s1r = None
+    qmmm.s1rr = None
     qmmm.mm_ewald_pot = None
     qmmm.qm_ewald_hess = None
     qmmm._keys.update(['s1r'])
@@ -382,7 +427,9 @@ def qmmm_for_scf(scf_method, mm_mol):
     qmmm.__class__.get_qm_ewald_pot = QMMM.get_qm_ewald_pot
     qmmm.__class__.get_qm_charges = QMMM.get_qm_charges
     qmmm.__class__.get_qm_dipoles = QMMM.get_qm_dipoles
+    qmmm.__class__.get_qm_quadrupoles = QMMM.get_qm_quadrupoles
     qmmm.__class__.get_s1r = QMMM.get_s1r
+    qmmm.__class__.get_s1rr = QMMM.get_s1rr
     qmmm.__class__.get_vdiff = QMMM.get_vdiff
     qmmm.__class__.get_hcore = QMMM.get_hcore
     qmmm.__class__.get_veff = QMMM.get_veff
