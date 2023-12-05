@@ -58,7 +58,6 @@ def add_mm_charges(scf_method, atoms_or_coords, a, charges, radii=None,
     >>> mol = gto.M(atom='H 0 0 0; F 0 0 1', basis='ccpvdz', verbose=0)
     >>> mf = add_mm_charges(dft.RKS(mol), [(0.5,0.6,0.8)], np.eye(3)*10, [-0.3])
     >>> mf.kernel()
-    -99.8152796827866
     '''
     mol = scf_method.mol
     if unit is None:
@@ -390,6 +389,7 @@ def qmmm_for_scf(scf_method, mm_mol):
     qmmm.mm_ewald_pot = None
     qmmm.qm_ewald_hess = None
     qmmm._keys.update(['s1r'])
+    qmmm._keys.update(['s1rr'])
     qmmm._keys.update(['mm_mol'])
     qmmm._keys.update(['mm_ewald_pot'])
     qmmm._keys.update(['qm_ewald_hess'])

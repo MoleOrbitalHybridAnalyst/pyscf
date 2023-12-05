@@ -111,6 +111,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         ew_eta, ew_cut = self.get_ewald_params()
         mesh = self.mesh
+        
+        logger.note(self, f"Ewald exponent {ew_eta}")
 
         # TODO Lall should respect ew_rcut
         if charges2 is not None:
@@ -131,10 +133,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         R = lib.direct_sum('ix-jx->ijx', coords1, all_coords2)
         r = np.sqrt(lib.einsum('ijx,ijx->ij', R, R))
         r[r<1e-16] = np.inf
-        # TODO handle this cutoff more elegantly
-#        r[r>ew_cut] = 1e60
+        rmax_qm = max(np.linalg.norm(coords1 - np.mean(coords1, axis=0), axis=-1))
 
-#        breakpoint()
         # substract the real-space Coulomb within rcut_hcore
         mask = dist2 <= self.rcut_hcore**2
         if all_charges2 is not None:
@@ -173,23 +173,34 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         # difference between MM gaussain charges and MM point charges
         if all_charges2 is not None and self.charge_model == 'gaussian':
-            # TODO apply cutoff to this real-space sum
             mask = dist2 > self.rcut_hcore**2
+            min_expnt = min(self.get_zetas())
+            max_ewrcut = pbc.gto.cell._estimate_rcut(min_expnt, 0, 1., self.precision)
+            cut2 = (max_ewrcut + rmax_qm)**2
+            mask = mask & (dist2 <= cut2)
             expnts = np.hstack([np.sqrt(self.get_zetas())] * len(Lall))[mask]
-            ekR = np.exp(-expnts**2 * r[:,mask]**2)
-            Tij = erfc(expnts * r[:,mask]) / r[:,mask]
-            invr3 = (Tij + 2*expnts/np.sqrt(np.pi) * ekR) / r[:,mask]**2
-            Tija = -lib.einsum('ijx,ij->ijx', R[:,mask], invr3)
-            Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R[:,mask], R[:,mask], 1/r[:,mask]**2)
-            Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r[:,mask]), np.eye(3))
-            invr5 = invr3 + 4/3*expnts**3/np.sqrt(np.pi) * ekR
+            r_ = r[:,mask]
+            R_ = R[:,mask]
+            ekR = np.exp(-lib.einsum('j,ij->ij', expnts**2, r_**2))
+            Tij = erfc(lib.einsum('j,ij->ij', expnts, r_)) / r_
+            invr3 = (Tij + lib.einsum('j,ij->ij', expnts, 2/np.sqrt(np.pi)*ekR)) / r_**2
+            Tija = -lib.einsum('ijx,ij->ijx', R_, invr3)
+            Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R_, R_, 1/r_**2)
+            Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r_), np.eye(3))
+            invr5 = invr3 + lib.einsum('j,ij->ij', expnts**3, 4/3/np.sqrt(np.pi) * ekR)
             Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
-            Tijab += lib.einsum('j,ij,ab->ijab', 4/3*expnts**3/np.sqrt(np.pi), ekR, np.eye(3))
+            Tijab += lib.einsum('j,ij,ab->ijab', expnts**3, 4/3/np.sqrt(np.pi)*ekR, np.eye(3))
             ewovrl0 -= lib.einsum('ij,j->i', Tij, all_charges2[mask])
             ewovrl1 -= lib.einsum('j,ija->ia', all_charges2[mask], Tija)
             ewovrl2 -= lib.einsum('j,ijab->iab', all_charges2[mask], Tijab) / 3
 
         # ewald real-space sum
+        cut2 = (ew_cut + rmax_qm)**2
+        mask = dist2 <= cut2
+        r = r[:,mask]
+        R = R[:,mask]
+        if all_charges2 is not None:
+            all_charges2 = all_charges2[mask]
         ekR = np.exp(-ew_eta**2 * r**2)
         # Tij = \hat{1/r} = f0 / r = erfc(r) / r
         Tij = erfc(ew_eta * r) / r
@@ -207,10 +218,6 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         if all_charges2 is not None:
             ewovrl0 += lib.einsum('ij,j->i', Tij, all_charges2)
             ewovrl1 += lib.einsum('j,ija->ia', all_charges2, Tija)
-            # @@@@@@@@@@@@@
-#            Tijab -= 4/3*ew_eta**3/np.sqrt(np.pi)*lib.einsum('ij,ab->ijab', ekR, np.eye(3))
-#            print(np.linalg.norm(lib.einsum('j,ijab->iab', all_charges2, Tijab) / 3))
-            # @@@@@@@@@@@@@
             ewovrl2 += lib.einsum('j,ijab->iab', all_charges2, Tijab) / 3
         else:
             ewovrl00 += Tij
@@ -230,9 +237,10 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewself11 = -lib.einsum('ij,ab->ijab', np.eye(len(coords1)), np.eye(3)) \
                     * 4 * ew_eta**3 / 3 / np.sqrt(np.pi)
 
-        dist2 = all_charges2 = mask = None
+        R = r = dist2 = all_charges2 = mask = None
 
         # g-space sum (using g grid)
+        logger.note(self, f"Ewald mesh {mesh}")
 
         Gv, Gvbase, weights = self.get_Gv_weights(mesh)
         absG2 = lib.einsum('gx,gx->g', Gv, Gv)
