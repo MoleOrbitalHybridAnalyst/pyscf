@@ -30,15 +30,21 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
     '''
     def __init__(self, atoms, a, 
-            rcut_ewald=20.0, rcut_dip=None,
+            rcut_ewald=None, rcut_hcore=None,
             charges=None, zeta=None):
         pbc.gto.Cell.__init__(self)
         self.atom = self._atom = atoms
         self.unit = 'Bohr'
         self.charge_model = 'point'
+        assert np.linalg.norm(a - np.diag(np.diag(a))) < 1e-12
         self.a = a
+        if rcut_ewald is None:
+            rcut_ewald = min(np.diag(a))
+        if rcut_hcore is None:
+            rcut_hcore = np.linalg.norm(np.diag(a))
+            logger.warn(self, "Setting rcut_hcore to be half box size")
         self.rcut_ewald = rcut_ewald
-        self.rcut_dip = rcut_dip
+        self.rcut_hcore = rcut_hcore
 
         # Initialize ._atm and ._env to save the coordinates and charges and
         # other info of MM particles
@@ -109,6 +115,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         # TODO Lall should respect ew_rcut
         if charges2 is not None:
             Lall = self.get_lattice_Ls()
+            if min(np.diag(self.lattice_vectors())) < ew_cut:
+                logger.warn('Ewald real-space cut > box size')
         else:
             Lall = np.zeros((1,3))
 
@@ -126,16 +134,9 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         # TODO handle this cutoff more elegantly
 #        r[r>ew_cut] = 1e60
 
-        # TODO
-        # [?] check both qm and mm real-space Coulomb energy correctness
-        # [?] check mm_ewald_pot ew_cut independency
-        # [?] check mm_ewald energy correctness
-        # [?] check qm_ewald_pot ew_cut independency
-        # [?] check qm_ewald_pot energy correctness
-
 #        breakpoint()
-        # substract the real-space Coulomb within rcut_dip
-        mask = dist2 <= self.rcut_dip**2
+        # substract the real-space Coulomb within rcut_hcore
+        mask = dist2 <= self.rcut_hcore**2
         if all_charges2 is not None:
             Tij = 1 / r[:,mask]
             Rij = R[:,mask]
@@ -153,12 +154,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewovrl1 = -lib.einsum('j,ija->ia', charges, Tija)
             # qm quad - mm pc
             ewovrl2 = -lib.einsum('j,ijab->iab', charges, Tijab) / 3
-            # @@@@@@@@@@@@@@@@@@@@@
-#            print("shutdown all qm-mm real-space")
-#            ewovrl0 = ewovrl1 = ewovrl2 = 0
-            # @@@@@@@@@@@@@@@@@@@@@
         else:
-            assert mask.all()              # all qm atoms should be within rcut_dip
+            assert mask.all()              # all qm atoms should be within rcut_hcore
             assert r.shape[0] == r.shape[1]   # real-space should not see qm images
             Tij = 1 / r
             Tija = -lib.einsum('ijx,ij->ijx', R, Tij**3)
@@ -173,12 +170,24 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewovrl01 =  Tija
             ewovrl11 =  Tijab
             ewovrl02 = -Tijab / 3
-            # @@@@@@@@@@@@@@@@@@@@@
-#            return ewovrl0, ewovrl1, ewovrl2
-            # this shutdown all qm-qm multipole interactions
-#            print("shutdown all qm-qm")
-#            return np.zeros_like(ewovrl00), np.zeros_like(ewovrl01), np.zeros_like(ewovrl11), np.zeros_like(ewovrl11)
-            # @@@@@@@@@@@@@@@@@@@@@
+
+        # difference between MM gaussain charges and MM point charges
+        if all_charges2 is not None and self.charge_model == 'gaussian':
+            # TODO apply cutoff to this real-space sum
+            mask = dist2 > self.rcut_hcore**2
+            expnts = np.hstack([np.sqrt(self.get_zetas())] * len(Lall))[mask]
+            ekR = np.exp(-expnts**2 * r[:,mask]**2)
+            Tij = erfc(expnts * r[:,mask]) / r[:,mask]
+            invr3 = (Tij + 2*expnts/np.sqrt(np.pi) * ekR) / r[:,mask]**2
+            Tija = -lib.einsum('ijx,ij->ijx', R[:,mask], invr3)
+            Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R[:,mask], R[:,mask], 1/r[:,mask]**2)
+            Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r[:,mask]), np.eye(3))
+            invr5 = invr3 + 4/3*expnts**3/np.sqrt(np.pi) * ekR
+            Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
+            Tijab += lib.einsum('j,ij,ab->ijab', 4/3*expnts**3/np.sqrt(np.pi), ekR, np.eye(3))
+            ewovrl0 -= lib.einsum('ij,j->i', Tij, all_charges2[mask])
+            ewovrl1 -= lib.einsum('j,ija->ia', all_charges2[mask], Tija)
+            ewovrl2 -= lib.einsum('j,ijab->iab', all_charges2[mask], Tijab) / 3
 
         # ewald real-space sum
         ekR = np.exp(-ew_eta**2 * r**2)
@@ -220,6 +229,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             # -d^2 Eself / dDia dDjb
             ewself11 = -lib.einsum('ij,ab->ijab', np.eye(len(coords1)), np.eye(3)) \
                     * 4 * ew_eta**3 / 3 / np.sqrt(np.pi)
+
+        dist2 = all_charges2 = mask = None
 
         # g-space sum (using g grid)
 
@@ -293,7 +304,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
                    ewovrl02 + ewself02 + ewg02
 
 def create_mm_mol(atoms_or_coords, a, charges=None, radii=None, 
-        rcut_ewald=None, rcut_dip=None, unit='Angstrom'):
+        rcut_ewald=None, rcut_hcore=None, unit='Angstrom'):
     '''Create an MM object based on the given coordinates and charges of MM
     particles.
 
@@ -341,13 +352,13 @@ def create_mm_mol(atoms_or_coords, a, charges=None, radii=None,
         a = a / param.BOHR
         if rcut_ewald is not None:
             rcut_ewald = rcut_ewald / param.BOHR
-        if rcut_dip is not None:
-            rcut_dip = rcut_dip / param.BOHR
+        if rcut_hcore is not None:
+            rcut_hcore = rcut_hcore / param.BOHR
 
     if rcut_ewald is not None:
         kwargs['rcut_ewald'] = rcut_ewald
-    if rcut_dip is not None:
-        kwargs['rcut_dip'] = rcut_dip
+    if rcut_hcore is not None:
+        kwargs['rcut_hcore'] = rcut_hcore
 
     return Cell(atoms, a, **kwargs)
 
