@@ -39,10 +39,12 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         assert np.linalg.norm(a - np.diag(np.diag(a))) < 1e-12
         self.a = a
         if rcut_ewald is None:
-            rcut_ewald = min(np.diag(a))
+            rcut_ewald = min(np.diag(a)) * 0.9
+            logger.warn(self, "Setting rcut_ewaldto be 0.9 * box size")
         if rcut_hcore is None:
             rcut_hcore = np.linalg.norm(np.diag(a)) / 2
             logger.warn(self, "Setting rcut_hcore to be half box size")
+        assert rcut_ewald < min(np.diag(a)), "Only rcut_ewald < box size implemented"
         self.rcut_ewald = rcut_ewald
         self.rcut_hcore = rcut_hcore
 
@@ -115,14 +117,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         logger.note(self, f"Ewald exponent {ew_eta}")
 
         # TODO Lall should respect ew_rcut
-        if charges2 is not None:
-            Lall = self.get_lattice_Ls()
-            if min(np.diag(self.lattice_vectors())) < ew_cut:
-                logger.warn('Ewald real-space cut > box size')
-        else:
-            Lall = np.zeros((1,3))
+        Lall = self.get_lattice_Ls()
 
-#        breakpoint()
         all_coords2 = lib.direct_sum('jx-Lx->Ljx', coords2, Lall).reshape(-1,3)
         if charges2 is not None:
             all_charges2 = np.hstack([charges2] * len(Lall))
@@ -137,13 +133,13 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         # substract the real-space Coulomb within rcut_hcore
         mask = dist2 <= self.rcut_hcore**2
+        Tij = 1 / r[:,mask]
+        Rij = R[:,mask]
+        Tija = -lib.einsum('ijx,ij->ijx', Rij, Tij**3)
+        Tijab  = 3 * lib.einsum('ija,ijb->ijab', Rij, Rij) 
+        Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
+        Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
         if all_charges2 is not None:
-            Tij = 1 / r[:,mask]
-            Rij = R[:,mask]
-            Tija = -lib.einsum('ijx,ij->ijx', Rij, Tij**3)
-            Tijab  = 3 * lib.einsum('ija,ijb->ijab', Rij, Rij) 
-            Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
-            Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
             charges = all_charges2[mask]
             # ew0 = -d^2 E / dQi dqj qj
             # ew1 = -d^2 E / dDia dqj qj
@@ -155,13 +151,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             # qm quad - mm pc
             ewovrl2 = -lib.einsum('j,ijab->iab', charges, Tijab) / 3
         else:
-            assert mask.all()              # all qm atoms should be within rcut_hcore
-            assert r.shape[0] == r.shape[1]   # real-space should not see qm images
-            Tij = 1 / r
-            Tija = -lib.einsum('ijx,ij->ijx', R, Tij**3)
-            Tijab  = 3 * lib.einsum('ija,ijb->ijab', R, R) 
-            Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
-            Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
+            assert r[:,mask].shape[0] == r[:,mask].shape[1]   # real-space should not see qm images
             # ew00 = -d^2 E / dQi dQj
             # ew01 = -d^2 E / dQi dDja
             # ew11 = -d^2 E / dDia dDjb
@@ -201,6 +191,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         R = R[:,mask]
         if all_charges2 is not None:
             all_charges2 = all_charges2[mask]
+        else:
+            assert r.shape[0] == r.shape[1], "QM image is within ewald cutoff of QM"
         ekR = np.exp(-ew_eta**2 * r**2)
         # Tij = \hat{1/r} = f0 / r = erfc(r) / r
         Tij = erfc(ew_eta * r) / r
