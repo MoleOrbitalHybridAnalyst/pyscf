@@ -128,7 +128,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         dist2 = lib.einsum('jx,jx->j', dist2, dist2)
         R = lib.direct_sum('ix-jx->ijx', coords1, all_coords2)
         r = np.sqrt(lib.einsum('ijx,ijx->ij', R, R))
-        r[r<1e-16] = np.inf
+        r[r<1e-16] = 1e100
         rmax_qm = max(np.linalg.norm(coords1 - np.mean(coords1, axis=0), axis=-1))
 
         # substract the real-space Coulomb within rcut_hcore
@@ -151,6 +151,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             # qm quad - mm pc
             ewovrl2 = -lib.einsum('j,ijab->iab', charges, Tijab) / 3
         else:
+            # FIXME a too small rcut_hcore truncates QM atoms, while this correction
+            # should be applied to all QM pairs regardless of rcut_hcore
             assert r[:,mask].shape[0] == r[:,mask].shape[1]   # real-space should not see qm images
             # ew00 = -d^2 E / dQi dQj
             # ew01 = -d^2 E / dQi dDja
@@ -192,7 +194,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         if all_charges2 is not None:
             all_charges2 = all_charges2[mask]
         else:
-            assert r.shape[0] == r.shape[1], "QM image is within ewald cutoff of QM"
+            if r.shape[0] != r.shape[1]:
+                raise NotImplementedError("QM image cannot be within ewald cutoff of QM")
         ekR = np.exp(-ew_eta**2 * r**2)
         # Tij = \hat{1/r} = f0 / r = erfc(r) / r
         Tij = erfc(ew_eta * r) / r
@@ -280,24 +283,13 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
 
         if charges2 is not None:
             # @@@@@@@@@@@@
-#            ewovrl2 = ewg2 = 0
-            # this shuts down qm-pc mm-pc and qm-dip mm-pc
-#            print("shutdown qm-pc mm-pc and qm-dip mm-pc")
-#            return np.zeros_like(ewovrl0 + ewg0), np.zeros_like(ewovrl1 + ewg1), ewovrl2 + ewg2
+#            ewg0 = ewg1 = ewg2 = 0
             # @@@@@@@@@@@@
             return ewovrl0 + ewg0, ewovrl1 + ewg1, ewovrl2 + ewg2
         else:
-#            # @@@@@@@@@@
-#            np.save("ewovrl0", ewovrl0)
-#            np.save("ewself0", ewself0)
-#            np.save("ewg0", ewg0)
-#            np.save("ewovrl1", ewovrl1)
-#            np.save("ewg1", ewg1)
-#            np.save("ewovrl2", ewovrl2)
-#            np.save("ewself2", ewself2)
-#            np.save("ewg2", ewg2)
-#            return ewovrl0 + ewself0 + ewg0, ewovrl1 + ewself1 + ewg1, np.zeros_like(ewovrl2 + ewself2 + ewg2)
-#            # @@@@@@@@@@
+            # @@@@@@@@@@
+#            ewg00 = ewg01 = ewg11 = ewg02 = 0
+            # @@@@@@@@@@
             return ewovrl00 + ewself00 + ewg00, \
                    ewovrl01 + ewself01 + ewg01, \
                    ewovrl11 + ewself11 + ewg11, \
