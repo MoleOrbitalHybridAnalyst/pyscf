@@ -114,7 +114,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         ew_eta, ew_cut = self.get_ewald_params()
         mesh = self.mesh
         
-        logger.note(self, f"Ewald exponent {ew_eta}")
+        logger.debug(self, f"Ewald exponent {ew_eta}")
 
         # TODO Lall should respect ew_rcut
         Lall = self.get_lattice_Ls()
@@ -235,7 +235,7 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         R = r = dist2 = all_charges2 = mask = None
 
         # g-space sum (using g grid)
-        logger.note(self, f"Ewald mesh {mesh}")
+        logger.debug(self, f"Ewald mesh {mesh}")
 
         Gv, Gvbase, weights = self.get_Gv_weights(mesh)
         absG2 = lib.einsum('gx,gx->g', Gv, Gv)
@@ -282,14 +282,8 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewg02 /= 3
 
         if charges2 is not None:
-            # @@@@@@@@@@@@
-#            ewg0 = ewg1 = ewg2 = 0
-            # @@@@@@@@@@@@
             return ewovrl0 + ewg0, ewovrl1 + ewg1, ewovrl2 + ewg2
         else:
-            # @@@@@@@@@@
-#            ewg00 = ewg01 = ewg11 = ewg02 = 0
-            # @@@@@@@@@@
             return ewovrl00 + ewself00 + ewg00, \
                    ewovrl01 + ewself01 + ewg01, \
                    ewovrl11 + ewself11 + ewg11, \
