@@ -301,6 +301,9 @@ def qmmm_for_scf(scf_method, mm_mol):
                 mm_ewald_pot[2] + qm_ewald_pot[2]
             vdiff = self.get_vdiff(mol, ewald_pot)
 
+            if vhf_last is not None and isinstance(vhf_last, lib.NPArrayWithTag):
+                vhf_last = vhf_last.veff_rs
+
             veff = method_class.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
             if isinstance(veff, lib.NPArrayWithTag):
                 metadata = veff.__dict__
