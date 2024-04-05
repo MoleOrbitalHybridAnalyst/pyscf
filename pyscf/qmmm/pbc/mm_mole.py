@@ -39,11 +39,12 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
         assert np.linalg.norm(a - np.diag(np.diag(a))) < 1e-12
         self.a = a
         if rcut_ewald is None:
-            rcut_ewald = min(np.diag(a)) * 0.9
-            logger.warn(self, "Setting rcut_ewaldto be 0.9 * box size")
+            rcut_ewald = min(np.diag(a)) * 0.5
+            logger.warn(self, "Setting rcut_ewald to be half  box size")
         if rcut_hcore is None:
             rcut_hcore = np.linalg.norm(np.diag(a)) / 2
-            logger.warn(self, "Setting rcut_hcore to be half box size")
+            logger.warn(self, "Setting rcut_hcore to be half box diagonal")
+        # rcut_ewald has to be < box size cuz my get_lattice_Ls only considers nearest cell
         assert rcut_ewald < min(np.diag(a)), "Only rcut_ewald < box size implemented"
         self.rcut_ewald = rcut_ewald
         self.rcut_hcore = rcut_hcore
@@ -126,111 +127,140 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             all_charges2 = None
         dist2 = lib.direct_sum('jx-x->jx', all_coords2, np.mean(coords1, axis=0))
         dist2 = lib.einsum('jx,jx->j', dist2, dist2)
-        R = lib.direct_sum('ix-jx->ijx', coords1, all_coords2)
-        r = np.sqrt(lib.einsum('ijx,ijx->ij', R, R))
-        r[r<1e-16] = 1e100
-        rmax_qm = max(np.linalg.norm(coords1 - np.mean(coords1, axis=0), axis=-1))
 
-        # substract the real-space Coulomb within rcut_hcore
-        mask = dist2 <= self.rcut_hcore**2
-        Tij = 1 / r[:,mask]
-        Rij = R[:,mask]
-        Tija = -lib.einsum('ijx,ij->ijx', Rij, Tij**3)
-        Tijab  = 3 * lib.einsum('ija,ijb->ijab', Rij, Rij) 
-        Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
-        Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
         if all_charges2 is not None:
-            charges = all_charges2[mask]
-            # ew0 = -d^2 E / dQi dqj qj
-            # ew1 = -d^2 E / dDia dqj qj
-            # ew2 = -d^2 E / dOiab dqj qj
-            # qm pc - mm pc
-            ewovrl0 = -lib.einsum('ij,j->i', Tij, charges)
-            # qm dip - mm pc
-            ewovrl1 = -lib.einsum('j,ija->ia', charges, Tija)
-            # qm quad - mm pc
-            ewovrl2 = -lib.einsum('j,ijab->iab', charges, Tijab) / 3
+            ewovrl0 = np.zeros(len(coords1))
+            ewovrl1 = np.zeros((len(coords1), 3))
+            ewovrl2 = np.zeros((len(coords1), 3, 3))
         else:
-            # FIXME a too small rcut_hcore truncates QM atoms, while this correction
-            # should be applied to all QM pairs regardless of rcut_hcore
-            assert r[:,mask].shape[0] == r[:,mask].shape[1]   # real-space should not see qm images
-            # ew00 = -d^2 E / dQi dQj
-            # ew01 = -d^2 E / dQi dDja
-            # ew11 = -d^2 E / dDia dDjb
-            # ew02 = -d^2 E / dQi dOjab
-            ewovrl00 = -Tij
-            ewovrl01 =  Tija
-            ewovrl11 =  Tijab
-            ewovrl02 = -Tijab / 3
+            ewovrl00 = np.zeros((len(coords1), len(coords1))) 
+            ewovrl01 = np.zeros((len(coords1), len(coords1), 3)) 
+            ewovrl11 = np.zeros((len(coords1), len(coords1), 3, 3)) 
+            ewovrl02 = np.zeros((len(coords1), len(coords1), 3, 3)) 
+            ewself00 = np.zeros((len(coords1), len(coords1))) 
+            ewself01 = np.zeros((len(coords1), len(coords1), 3)) 
+            ewself11 = np.zeros((len(coords1), len(coords1), 3, 3)) 
+            ewself02 = np.zeros((len(coords1), len(coords1), 3, 3)) 
 
-        # difference between MM gaussain charges and MM point charges
-        if all_charges2 is not None and self.charge_model == 'gaussian':
-            mask = dist2 > self.rcut_hcore**2
-            min_expnt = min(self.get_zetas())
-            max_ewrcut = pbc.gto.cell._estimate_rcut(min_expnt, 0, 1., self.precision)
-            cut2 = (max_ewrcut + rmax_qm)**2
-            mask = mask & (dist2 <= cut2)
-            expnts = np.hstack([np.sqrt(self.get_zetas())] * len(Lall))[mask]
-            r_ = r[:,mask]
-            R_ = R[:,mask]
-            ekR = np.exp(-lib.einsum('j,ij->ij', expnts**2, r_**2))
-            Tij = erfc(lib.einsum('j,ij->ij', expnts, r_)) / r_
-            invr3 = (Tij + lib.einsum('j,ij->ij', expnts, 2/np.sqrt(np.pi)*ekR)) / r_**2
+        mem_avail = self.max_memory - lib.current_memory()[0] # in MB
+        blksize = int(mem_avail/81/(8e-6*len(all_coords2)))
+        if blksize == 0:
+            raise RuntimeError(f"Not enough memory, mem_avail = {mem_avail}, blkszie = {blksize}")
+
+        for i0, i1 in lib.prange(0, len(coords1), blksize):
+            R = lib.direct_sum('ix-jx->ijx', coords1[i0:i1], all_coords2)
+            r = np.linalg.norm(R, axis=-1)
+            r[r<1e-16] = 1e100
+            rmax_qm = max(np.linalg.norm(coords1 - np.mean(coords1, axis=0), axis=-1))
+
+            # substract the real-space Coulomb within rcut_hcore
+            mask = dist2 <= self.rcut_hcore**2
+            Tij = 1 / r[:,mask]
+            Rij = R[:,mask]
+            Tija = -lib.einsum('ijx,ij->ijx', Rij, Tij**3)
+            Tijab  = 3 * lib.einsum('ija,ijb->ijab', Rij, Rij) 
+            Tijab  = lib.einsum('ijab,ij->ijab', Tijab, Tij**5)
+            Tijab -= lib.einsum('ij,ab->ijab', Tij**3, np.eye(3))
+            if all_charges2 is not None:
+                charges = all_charges2[mask]
+                # ew0 = -d^2 E / dQi dqj qj
+                # ew1 = -d^2 E / dDia dqj qj
+                # ew2 = -d^2 E / dOiab dqj qj
+                # qm pc - mm pc
+                ewovrl0[i0:i1] += -lib.einsum('ij,j->i', Tij, charges)
+                # qm dip - mm pc
+                ewovrl1[i0:i1] += -lib.einsum('j,ija->ia', charges, Tija)
+                # qm quad - mm pc
+                ewovrl2[i0:i1] += -lib.einsum('j,ijab->iab', charges, Tijab) / 3
+            else:
+                # NOTE a too small rcut_hcore truncates QM atoms, while this correction
+                # should be applied to all QM pairs regardless of rcut_hcore
+                # NOTE this is now checked in get_hcore
+                #assert r[:,mask].shape[0] == r[:,mask].shape[1]   # real-space should not see qm images
+                # ew00 = -d^2 E / dQi dQj
+                # ew01 = -d^2 E / dQi dDja
+                # ew11 = -d^2 E / dDia dDjb
+                # ew02 = -d^2 E / dQi dOjab
+                ewovrl00[i0:i1] += -Tij
+                ewovrl01[i0:i1] +=  Tija
+                ewovrl11[i0:i1] +=  Tijab
+                ewovrl02[i0:i1] += -Tijab / 3
+
+            # difference between MM gaussain charges and MM point charges
+            if all_charges2 is not None and self.charge_model == 'gaussian':
+                mask = dist2 > self.rcut_hcore**2
+                min_expnt = min(self.get_zetas())
+                max_ewrcut = pbc.gto.cell._estimate_rcut(min_expnt, 0, 1., self.precision)
+                cut2 = (max_ewrcut + rmax_qm)**2
+                mask = mask & (dist2 <= cut2)
+                expnts = np.hstack([np.sqrt(self.get_zetas())] * len(Lall))[mask]
+                r_ = r[:,mask]
+                R_ = R[:,mask]
+                ekR = np.exp(-lib.einsum('j,ij->ij', expnts**2, r_**2))
+                Tij = erfc(lib.einsum('j,ij->ij', expnts, r_)) / r_
+                invr3 = (Tij + lib.einsum('j,ij->ij', expnts, 2/np.sqrt(np.pi)*ekR)) / r_**2
+                Tija = -lib.einsum('ijx,ij->ijx', R_, invr3)
+                Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R_, R_, 1/r_**2)
+                Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r_), np.eye(3))
+                invr5 = invr3 + lib.einsum('j,ij->ij', expnts**3, 4/3/np.sqrt(np.pi) * ekR)
+                Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
+                Tijab += lib.einsum('j,ij,ab->ijab', expnts**3, 4/3/np.sqrt(np.pi)*ekR, np.eye(3))
+                ewovrl0[i0:i1] -= lib.einsum('ij,j->i', Tij, all_charges2[mask])
+                ewovrl1[i0:i1] -= lib.einsum('j,ija->ia', all_charges2[mask], Tija)
+                ewovrl2[i0:i1] -= lib.einsum('j,ijab->iab', all_charges2[mask], Tijab) / 3
+
+            # ewald real-space sum
+            if all_charges2 is not None:
+                cut2 = (ew_cut + rmax_qm)**2
+                mask = dist2 <= cut2
+                r_ = r[:,mask]
+                R_ = R[:,mask]
+                all_charges2_ = all_charges2[mask]
+            else:
+                # ewald sum will run over all qm images regardless of ew_cut
+                # this is to ensure r and R will always have the shape of (i1-i0, L*num_qm)
+                r_ = r
+                R_ = R
+            ekR = np.exp(-ew_eta**2 * r_**2)
+            # Tij = \hat{1/r} = f0 / r = erfc(r) / r
+            Tij = erfc(ew_eta * r_) / r_
+            # Tija = -Rija \hat{1/r^3} = -Rija / r^2 ( \hat{1/r} + 2 eta/sqrt(pi) exp(-eta^2 r^2) )
+            invr3 = (Tij + 2*ew_eta/np.sqrt(np.pi) * ekR) / r_**2
             Tija = -lib.einsum('ijx,ij->ijx', R_, invr3)
+            # Tijab = (3 RijaRijb - Rij^2 delta_ab) \hat{1/r^5}
             Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R_, R_, 1/r_**2)
             Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r_), np.eye(3))
-            invr5 = invr3 + lib.einsum('j,ij->ij', expnts**3, 4/3/np.sqrt(np.pi) * ekR)
+            invr5 = invr3 + 4/3*ew_eta**3/np.sqrt(np.pi) * ekR # NOTE this is invr5 * r**2
             Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
-            Tijab += lib.einsum('j,ij,ab->ijab', expnts**3, 4/3/np.sqrt(np.pi)*ekR, np.eye(3))
-            ewovrl0 -= lib.einsum('ij,j->i', Tij, all_charges2[mask])
-            ewovrl1 -= lib.einsum('j,ija->ia', all_charges2[mask], Tija)
-            ewovrl2 -= lib.einsum('j,ijab->iab', all_charges2[mask], Tijab) / 3
+            # NOTE the below is present in Eq 8 but missing in Eq 12
+            Tijab += 4/3*ew_eta**3/np.sqrt(np.pi)*lib.einsum('ij,ab->ijab', ekR, np.eye(3))
 
-        # ewald real-space sum
-        cut2 = (ew_cut + rmax_qm)**2
-        mask = dist2 <= cut2
-        r = r[:,mask]
-        R = R[:,mask]
-        if all_charges2 is not None:
-            all_charges2 = all_charges2[mask]
-        else:
-            if r.shape[0] != r.shape[1]:
-                raise NotImplementedError("QM image cannot be within ewald cutoff of QM")
-        ekR = np.exp(-ew_eta**2 * r**2)
-        # Tij = \hat{1/r} = f0 / r = erfc(r) / r
-        Tij = erfc(ew_eta * r) / r
-        # Tija = -Rija \hat{1/r^3} = -Rija / r^2 ( \hat{1/r} + 2 eta/sqrt(pi) exp(-eta^2 r^2) )
-        invr3 = (Tij + 2*ew_eta/np.sqrt(np.pi) * ekR) / r**2
-        Tija = -lib.einsum('ijx,ij->ijx', R, invr3)
-        # Tijab = (3 RijaRijb - Rij^2 delta_ab) \hat{1/r^5}
-        Tijab  = 3 * lib.einsum('ija,ijb,ij->ijab', R, R, 1/r**2)
-        Tijab -= lib.einsum('ij,ab->ijab', np.ones_like(r), np.eye(3))
-        invr5 = invr3 + 4/3*ew_eta**3/np.sqrt(np.pi) * ekR # NOTE this is invr5 * r**2
-        Tijab = lib.einsum('ijab,ij->ijab', Tijab, invr5)
-        # NOTE the below is present in Eq 8 but missing in Eq 12
-        Tijab += 4/3*ew_eta**3/np.sqrt(np.pi)*lib.einsum('ij,ab->ijab', ekR, np.eye(3))
+            if all_charges2 is not None:
+                ewovrl0[i0:i1] += lib.einsum('ij,j->i', Tij, all_charges2_)
+                ewovrl1[i0:i1] += lib.einsum('j,ija->ia', all_charges2_, Tija)
+                ewovrl2[i0:i1] += lib.einsum('j,ijab->iab', all_charges2_, Tijab) / 3
+            else:
+                Tij = np.sum(Tij.reshape(-1, len(Lall), len(coords1)), axis=1)
+                Tija = np.sum(Tija.reshape(-1, len(Lall), len(coords1), 3), axis=1)
+                Tijab = np.sum(Tijab.reshape(-1, len(Lall), len(coords1), 3, 3), axis=1)
+                ewovrl00[i0:i1] += Tij
+                ewovrl01[i0:i1] -= Tija
+                ewovrl11[i0:i1] -= Tijab
+                ewovrl02[i0:i1] += Tijab / 3
+            ekR = Tij = invr3 = Tijab = invr5 = None
 
-        if all_charges2 is not None:
-            ewovrl0 += lib.einsum('ij,j->i', Tij, all_charges2)
-            ewovrl1 += lib.einsum('j,ija->ia', all_charges2, Tija)
-            ewovrl2 += lib.einsum('j,ijab->iab', all_charges2, Tijab) / 3
-        else:
-            ewovrl00 += Tij
-            ewovrl01 -= Tija
-            ewovrl11 -= Tijab
-            ewovrl02 += Tijab / 3
-        ekR = Tij = invr3 = Tijab = invr5 = None
+            if all_charges2 is not None:
+                pass
+            else:
+                ewself01[i0:i1] += 0
+                ewself02[i0:i1] += 0
+                # -d^2 Eself / dQi dQj
+                ewself00[i0:i1] += -np.eye(len(coords1))[i0:i1] * 2 * ew_eta / np.sqrt(np.pi)
+                # -d^2 Eself / dDia dDjb
+                ewself11[i0:i1] += -lib.einsum('ij,ab->ijab', np.eye(len(coords1)), np.eye(3)) \
+                        * 4 * ew_eta**3 / 3 / np.sqrt(np.pi)
 
-        if all_charges2 is not None:
-            pass
-        else:
-            ewself01 = 0
-            ewself02 = 0
-            # -d^2 Eself / dQi dQj
-            ewself00 = -np.eye(len(coords1)) * 2 * ew_eta / np.sqrt(np.pi)
-            # -d^2 Eself / dDia dDjb
-            ewself11 = -lib.einsum('ij,ab->ijab', np.eye(len(coords1)), np.eye(3)) \
-                    * 4 * ew_eta**3 / 3 / np.sqrt(np.pi)
+            r_ = R_ = all_charges2_ = None
 
         R = r = dist2 = all_charges2 = mask = None
 
@@ -260,11 +290,13 @@ class Cell(qmmm.mm_mole.Mole, pbc.gto.Cell):
             ewg0  = lib.einsum('ig,g,g->i', cosGvR1, zcosGvR2, Gpref)
             ewg0 += lib.einsum('ig,g,g->i', sinGvR1, zsinGvR2, Gpref)
             # qm dip - mm pc
-            ewg1  = lib.einsum('gx,ig,g,g->ix', Gv, cosGvR1, zsinGvR2, Gpref)
-            ewg1 -= lib.einsum('gx,ig,g,g->ix', Gv, sinGvR1, zcosGvR2, Gpref)
+            p = ['einsum_path', (2, 3), (0, 2), (0, 1)]
+            ewg1  = lib.einsum('gx,ig,g,g->ix', Gv, cosGvR1, zsinGvR2, Gpref, optimize=p)
+            ewg1 -= lib.einsum('gx,ig,g,g->ix', Gv, sinGvR1, zcosGvR2, Gpref, optimize=p)
             # qm quad - mm pc
-            ewg2  = -lib.einsum('gx,gy,ig,g,g->ixy', Gv, Gv, cosGvR1, zcosGvR2, Gpref)
-            ewg2 += -lib.einsum('gx,gy,ig,g,g->ixy', Gv, Gv, sinGvR1, zsinGvR2, Gpref)
+            p = ['einsum_path', (3, 4), (0, 3), (0, 2), (0, 1)]
+            ewg2  = -lib.einsum('gx,gy,ig,g,g->ixy', Gv, Gv, cosGvR1, zcosGvR2, Gpref, optimize=p)
+            ewg2 += -lib.einsum('gx,gy,ig,g,g->ixy', Gv, Gv, sinGvR1, zsinGvR2, Gpref, optimize=p)
             ewg2 /= 3
         else:
             # qm pc - qm pc
