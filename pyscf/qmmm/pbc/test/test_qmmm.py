@@ -20,6 +20,7 @@ import unittest
 import numpy as np
 import pyscf
 from pyscf.dft import rks
+from pyscf import scf, lib
 from pyscf.qmmm.pbc import itrf
 
 atom = '''
@@ -36,7 +37,7 @@ grids_level = 3
 
 def setUpModule():
     global mol
-    mol = pyscf.M(atom=atom, basis=bas, max_memory=32000)
+    mol = pyscf.M(atom=atom, basis=bas)
     mol.output = '/dev/null'
     mol.build()
     mol.verbose = 1
@@ -46,33 +47,79 @@ def tearDownModule():
     mol.stdout.close()
     del mol
 
-def run_dft(xc):
+def run_dft(xc, radii):
     mf = rks.RKS(mol, xc=xc).density_fit(auxbasis=auxbasis)
     mf = itrf.add_mm_charges(
-        mf, [[1,2,-1],[3,4,5]], np.eye(3)*15, [-5,5], [0.8,1.2], rcut_ewald=8, rcut_hcore=6)
+        mf, [[1,2,-1],[3,4,5]], np.eye(3)*15, [-5,5], radii, rcut_ewald=8, rcut_hcore=6)
     mf.conv_tol = scf_tol
     mf.max_cycle = max_scf_cycles
     mf.grids.level = grids_level
     e_dft = mf.kernel()
 
     g = mf.nuc_grad_method()
-    g.max_memory = 32000
     g.auxbasis_response = True
     g_qm = g.kernel()
 
     g_mm = g.grad_nuc_mm() + g.grad_hcore_mm(mf.make_rdm1()) + g.de_ewald_mm
     return e_dft, g_qm, g_mm
 
+def run_hf(mol, coords, charges, radii, box):
+    mf = itrf.add_mm_charges(scf.RHF(mol), coords, box, charges, radii, rcut_ewald=8, rcut_hcore=6).run(conv_tol=1e-10)
+    hfg = mf.nuc_grad_method()
+    return mf, hfg
+
 class KnownValues(unittest.TestCase):
+    def test_rhf_grad(self):
+        print('-------- RHF Gradient -------------')
+        mf, hfg = run_hf(mol, coords=[[1,2,-1],[3,4,5]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])
+        g_qm = hfg.run().de
+        g_mm = hfg.grad_nuc_mm() + hfg.grad_hcore_mm(mf.make_rdm1()) + hfg.de_ewald_mm
+
+        atom1 = '''
+        O       0.0010000000    -0.0000000000     0.1174000000
+        H      -0.7570000000    -0.0000000000    -0.4696000000
+        H       0.7570000000     0.0000000000    -0.4696000000
+        '''
+        mol1 = pyscf.M(atom=atom1, basis=bas)
+        mol1.build()
+        mol1.verbose = 0
+        mf1 = run_hf(mol1, coords=[[1,2,-1],[3,4,5]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+
+        atom2 = '''
+        O      -0.0010000000    -0.0000000000     0.1174000000
+        H      -0.7570000000    -0.0000000000    -0.4696000000
+        H       0.7570000000     0.0000000000    -0.4696000000
+        '''
+        mol2 = pyscf.M(atom=atom2, basis=bas)
+        mol2.build()
+        mol2.verbose = 0
+        mf2 = run_hf(mol2, coords=[[1,2,-1],[3,4,5]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+
+        self.assertAlmostEqual((mf1.e_tot - mf2.e_tot)/0.002*lib.param.BOHR, g_qm[0,0], 5)
+
+        mf1 = run_hf(mol, coords=[[1.001,2,-1],[3,4,5]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+        mf2 = run_hf(mol, coords=[[0.999,2,-1],[3,4,5]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+        self.assertAlmostEqual((mf1.e_tot - mf2.e_tot)/0.002*lib.param.BOHR, g_mm[0,0], 5)
+
+        mf1 = run_hf(mol, coords=[[1,2,-1],[3,4,5.001]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+        mf2 = run_hf(mol, coords=[[1,2,-1],[3,4,4.999]], box=np.eye(3)*15, charges=[-5,5], radii=[3,5])[0]
+        self.assertAlmostEqual((mf1.e_tot - mf2.e_tot)/0.002*lib.param.BOHR, g_mm[1,2], 5)
+
     def test_rks_pbe0(self):
         print('-------- RKS PBE0 -------------')
-        e_tot, g_qm, g_mm = run_dft('PBE0')
+        e_tot, g_qm, g_mm = run_dft('PBE0', [0.8, 1.2])
         assert abs(e_tot - -76.00178807) < 1e-7
         assert abs(g_qm - np.array([[ 0.03002572,  0.13947702, -0.09234864],
                                     [-0.00462601, -0.04602809,  0.02750759],
                                     [-0.01821532, -0.18473378, 0.04189843]])).max() < 1e-6
         assert abs(g_mm - np.array([[-0.00914559,  0.08992359,  0.02114633],
                                     [ 0.00196155,  0.00136132, 0.00179565]])).max() < 1e-6
+
+        e_tot, g_qm, g_mm = run_dft('PBE0', None)
+        e_ref, g_qm_ref, g_mm_ref = run_dft('PBE0', [1e-30, 1e-30])
+        assert abs(e_tot - e_ref) < 1e-8
+        assert abs(g_qm - g_qm_ref).max() < 1e-8
+        assert abs(g_mm - g_mm_ref).max() < 1e-8
 
 if __name__ == "__main__":
     print("Full Tests for QMMM PBC")
